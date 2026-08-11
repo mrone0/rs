@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rs-cp-core", "crates/rs-cp-daemon"]
+members = ["crates/span-core", "crates/span"]
 
 [profile.release]
 opt-level = "z"

@@ -1,3 +1,8 @@
 /target/
 .DS_Store
 .idea/
+# Android local/build artifacts
+apps/android/local.properties
+apps/android/.gradle/
+apps/android/build/
+apps/android/app/build/

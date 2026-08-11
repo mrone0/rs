@@ -20,23 +20,23 @@ jobs:
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
-            bin: rs-cp-daemon
-            archive: rs-cp-macos-arm64.tar.gz
+            bin: span
+            archive: span-macos-arm64.tar.gz
           - name: macos-x64
             os: macos-15-intel
             target: x86_64-apple-darwin
-            bin: rs-cp-daemon
-            archive: rs-cp-macos-x64.tar.gz
+            bin: span
+            archive: span-macos-x64.tar.gz
           - name: windows-x64
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            bin: rs-cp-daemon.exe
-            archive: rs-cp-windows-x64.zip
+            bin: span.exe
+            archive: span-windows-x64.zip
           - name: linux-x64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            bin: rs-cp-daemon
-            archive: rs-cp-linux-x64.tar.gz
+            bin: span
+            archive: span-linux-x64.tar.gz
 
     steps:
       - name: Checkout
@@ -51,26 +51,26 @@ jobs:
         run: cargo test --workspace
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p rs-cp-daemon
+        run: cargo build --release --target ${{ matrix.target }} -p span
 
       - name: Stage Unix artifact
         if: runner.os != 'Windows'
         run: |
-          mkdir -p dist/rs-cp
-          cp target/${{ matrix.target }}/release/${{ matrix.bin }} dist/rs-cp/
-          cp README.md docs/pc-mvp.md docs/discovery-protocol.md dist/rs-cp/
-          tar -czf dist/${{ matrix.archive }} -C dist rs-cp
+          mkdir -p dist/span
+          cp target/${{ matrix.target }}/release/${{ matrix.bin }} dist/span/
+          cp README.md docs/pc-mvp.md docs/discovery-protocol.md dist/span/
+          tar -czf dist/${{ matrix.archive }} -C dist span
 
       - name: Stage Windows artifact
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force dist/rs-cp | Out-Null
-          Copy-Item target/${{ matrix.target }}/release/${{ matrix.bin }} dist/rs-cp/
-          Copy-Item README.md dist/rs-cp/
-          Copy-Item docs/pc-mvp.md dist/rs-cp/
-          Copy-Item docs/discovery-protocol.md dist/rs-cp/
-          Compress-Archive -Path dist/rs-cp -DestinationPath dist/${{ matrix.archive }} -Force
+          New-Item -ItemType Directory -Force dist/span | Out-Null
+          Copy-Item target/${{ matrix.target }}/release/${{ matrix.bin }} dist/span/
+          Copy-Item README.md dist/span/
+          Copy-Item docs/pc-mvp.md dist/span/
+          Copy-Item docs/discovery-protocol.md dist/span/
+          Compress-Archive -Path dist/span -DestinationPath dist/${{ matrix.archive }} -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

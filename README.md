@@ -1,6 +1,6 @@
-# rs-cp
+# span
 
-跨设备文本剪贴板同步，优先级是：**占用最小、速度最快、体验最直观**。
+跨设备数据互通，第一版先做文本剪贴板同步。优先级是：**占用最小、速度最快、体验最直观**。
 
 ## 目标
 
@@ -21,7 +21,7 @@ flowchart LR
   end
 
   subgraph LAN["同一局域网"]
-    C["mDNS 发现"]
+    C["UDP 广播发现"]
     D["加密传输"]
   end
 
@@ -45,25 +45,39 @@ flowchart LR
 
 ## 代码结构
 
-- `crates/rs-cp-core`：核心模型与协议类型
-- `crates/rs-cp-daemon`：桌面后台守护进程入口
+- `crates/span-core`：核心模型与协议类型
+- `crates/span`：桌面后台守护进程入口
 - `docs/discovery-protocol.md`：设备发现和文本传输协议
 - `docs/pc-mvp.md`：PC 端 MVP 使用说明
 - `docs/release.md`：GitHub Actions 发布说明
-- `docs/mobile-ios-plan.md`：iOS 快捷触发 App 计划
+- `apps/android`：Android V1 App（剪贴板一键发送 / 分享菜单 / Quick Settings Tile）
+- `apps/android/README.md`：Android 构建、配对和限制
+- `docs/mobile-ios-plan.md`：暂缓的 iOS 方案草稿（当前不参与 V1）
 
 ## 发布
 
 PC 端通过 GitHub Actions 自动打包，不要求用户本地构建。见 `docs/release.md`。
 
+iOS 当前暂缓，不纳入 V1 构建和发布；先把 Android → PC 的低占用文本链路验证稳定。
+
 ## PC 端命令
 
 ```sh
-cargo run -p rs-cp-daemon -- status
-cargo run -p rs-cp-daemon -- discover
-cargo run -p rs-cp-daemon -- announce
-cargo run -p rs-cp-daemon -- trust <id> <name> <platform> [host]
-cargo run -p rs-cp-daemon -- run
+cargo run -p span -- status
+cargo run -p span -- discover
+cargo run -p span -- announce
+cargo run -p span -- trust <id>
+cargo run -p span -- trust <id> <name> <platform> [host] [public-key]
+cargo run -p span -- start
 ```
 
-`run` 会监听本机剪贴板变化，并把纯文本发送给所有带 `host` 的可信设备。
+`start` 会在后台启动 daemon 并立即返回；`run` 仅用于前台调试。
+
+## Android 端
+
+Android V1 通过 App、系统分享菜单或 Quick Settings Tile 触发发送，不做后台剪贴板监听。详见 [`apps/android/README.md`](apps/android/README.md)。
+
+```sh
+cd apps/android
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :app:testDebugUnitTest :app:assembleDebug
+```

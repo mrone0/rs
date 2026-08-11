@@ -1,0 +1,389 @@
+use std::fs;
+use std::io;
+use std::path::PathBuf;
+
+use span_core::{DeviceId, DeviceInfo, Platform, TrustState};
+
+use crate::config::{parse_platform, platform_name, sanitize};
+#[derive(Clone, Debug)]
+pub struct TrustStore {
+    path: PathBuf,
+    devices: Vec<DeviceInfo>,
+}
+
+impl TrustStore {
+    pub fn load(path: impl Into<PathBuf>) -> io::Result<Self> {
+        let path = path.into();
+        let devices = if path.exists() {
+            parse_devices(&fs::read_to_string(&path)?)
+        } else {
+            Vec::new()
+        };
+
+        Ok(Self { path, devices })
+    }
+
+    pub fn devices(&self) -> &[DeviceInfo] {
+        &self.devices
+    }
+
+    pub fn trusted_devices(&self) -> Vec<&DeviceInfo> {
+        self.devices
+            .iter()
+            .filter(|device| device.trust_state == TrustState::Trusted)
+            .collect()
+    }
+
+    pub fn trusted_device(&self, id: &DeviceId) -> Option<&DeviceInfo> {
+        self.devices
+            .iter()
+            .find(|device| &device.id == id && device.trust_state == TrustState::Trusted)
+    }
+
+    pub fn device(&self, id: &DeviceId) -> Option<&DeviceInfo> {
+        self.devices.iter().find(|device| &device.id == id)
+    }
+
+    pub fn trust_existing(&mut self, id: &DeviceId) -> io::Result<bool> {
+        let Some(device) = self.devices.iter_mut().find(|device| &device.id == id) else {
+            return Ok(false);
+        };
+        device.trust_state = TrustState::Trusted;
+        self.save()?;
+        Ok(true)
+    }
+
+    pub fn trust(
+        &mut self,
+        id: DeviceId,
+        name: String,
+        platform: Platform,
+        endpoint: Option<String>,
+        public_key: Option<String>,
+    ) -> io::Result<()> {
+        if let Some(device) = self.devices.iter_mut().find(|device| device.id == id) {
+            device.name = name;
+            device.platform = platform;
+            device.trust_state = TrustState::Trusted;
+            if endpoint.is_some() {
+                device.endpoint = endpoint;
+            }
+            if public_key.is_some() {
+                device.public_key = public_key;
+            }
+        } else {
+            self.devices.push(DeviceInfo {
+                id,
+                name,
+                platform,
+                trust_state: TrustState::Trusted,
+                endpoint,
+                public_key,
+            });
+        }
+        self.save()
+    }
+
+    pub fn record_discovered(&mut self, mut discovered: DeviceInfo) -> io::Result<bool> {
+        let Some(existing) = self
+            .devices
+            .iter_mut()
+            .find(|device| device.id == discovered.id)
+        else {
+            self.devices.push(discovered);
+            self.save()?;
+            return Ok(true);
+        };
+
+        if matches!(
+            existing.trust_state,
+            TrustState::Blocked | TrustState::Revoked
+        ) {
+            return Ok(false);
+        }
+
+        if let (Some(existing_key), Some(discovered_key)) = (
+            existing.public_key.as_deref(),
+            discovered.public_key.as_deref(),
+        ) {
+            if existing_key != discovered_key {
+                return Ok(false);
+            }
+        }
+
+        discovered.trust_state = existing.trust_state;
+        let changed = *existing != discovered;
+        if changed {
+            *existing = discovered;
+            self.save()?;
+        }
+        Ok(changed)
+    }
+
+    pub fn revoke(&mut self, id: &DeviceId) -> io::Result<bool> {
+        let mut changed = false;
+        for device in &mut self.devices {
+            if &device.id == id {
+                device.trust_state = TrustState::Revoked;
+                changed = true;
+            }
+        }
+        if changed {
+            self.save()?;
+        }
+        Ok(changed)
+    }
+
+    pub fn update_endpoint_and_key(
+        &mut self,
+        id: &DeviceId,
+        endpoint: String,
+        public_key: String,
+    ) -> io::Result<bool> {
+        let Some(device) = self
+            .devices
+            .iter_mut()
+            .find(|device| &device.id == id && device.trust_state == TrustState::Trusted)
+        else {
+            return Ok(false);
+        };
+
+        let mut changed = false;
+
+        if device.endpoint.as_deref() != Some(endpoint.as_str()) {
+            device.endpoint = Some(endpoint);
+            changed = true;
+        }
+
+        match device.public_key.as_deref() {
+            None => {
+                device.public_key = Some(public_key);
+                changed = true;
+            }
+            Some(existing) if existing == public_key => {}
+            Some(_) => {
+                return Ok(false);
+            }
+        }
+
+        if changed {
+            self.save()?;
+        }
+        Ok(changed)
+    }
+
+    pub fn reset(&mut self) -> io::Result<()> {
+        self.devices.clear();
+        self.save()
+    }
+
+    fn save(&self) -> io::Result<()> {
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::write(&self.path, serialize_devices(&self.devices))
+    }
+}
+
+fn parse_devices(value: &str) -> Vec<DeviceInfo> {
+    value.lines().filter_map(parse_device).collect()
+}
+
+fn parse_device(line: &str) -> Option<DeviceInfo> {
+    let mut fields = line.split('\t');
+    Some(DeviceInfo {
+        id: DeviceId::new(fields.next()?.to_string())?,
+        name: fields.next()?.to_string(),
+        platform: parse_platform(fields.next()?),
+        trust_state: parse_trust_state(fields.next()?),
+        endpoint: fields.next().and_then(non_empty_string),
+        public_key: fields.next().and_then(non_empty_string),
+    })
+}
+
+fn serialize_devices(devices: &[DeviceInfo]) -> String {
+    devices
+        .iter()
+        .map(|device| {
+            format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\n",
+                device.id,
+                sanitize(&device.name),
+                platform_name(device.platform),
+                trust_state_name(device.trust_state),
+                device.endpoint.as_deref().unwrap_or_default(),
+                device.public_key.as_deref().unwrap_or_default()
+            )
+        })
+        .collect()
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    (!value.trim().is_empty()).then_some(value.to_string())
+}
+
+fn parse_trust_state(value: &str) -> TrustState {
+    match value {
+        "discovered" => TrustState::Discovered,
+        "pending" => TrustState::Pending,
+        "trusted" => TrustState::Trusted,
+        "blocked" => TrustState::Blocked,
+        "revoked" => TrustState::Revoked,
+        _ => TrustState::Discovered,
+    }
+}
+
+fn trust_state_name(state: TrustState) -> &'static str {
+    match state {
+        TrustState::Discovered => "discovered",
+        TrustState::Pending => "pending",
+        TrustState::Trusted => "trusted",
+        TrustState::Blocked => "blocked",
+        TrustState::Revoked => "revoked",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persists_trusted_devices() {
+        let path = temp_file("trusted-devices.tsv");
+        let _ = fs::remove_file(&path);
+
+        let mut store = TrustStore::load(&path).unwrap();
+        store
+            .trust(
+                DeviceId::new("abc").unwrap(),
+                "MacBook".to_string(),
+                Platform::MacOs,
+                Some("127.0.0.1".to_string()),
+                Some("aa".repeat(32)),
+            )
+            .unwrap();
+
+        let loaded = TrustStore::load(&path).unwrap();
+        assert_eq!(loaded.trusted_devices().len(), 1);
+        assert_eq!(loaded.trusted_devices()[0].name, "MacBook");
+        assert_eq!(
+            loaded.trusted_devices()[0].endpoint.as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            loaded.trusted_devices()[0].public_key.as_deref(),
+            Some(&"aa".repeat(32)[..])
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn revoked_devices_stop_receiving() {
+        let path = temp_file("revoked-devices.tsv");
+        let _ = fs::remove_file(&path);
+        let id = DeviceId::new("abc").unwrap();
+
+        let mut store = TrustStore::load(&path).unwrap();
+        store
+            .trust(
+                id.clone(),
+                "MacBook".to_string(),
+                Platform::MacOs,
+                Some("127.0.0.1".to_string()),
+                Some("aa".repeat(32)),
+            )
+            .unwrap();
+        assert!(store.revoke(&id).unwrap());
+
+        let loaded = TrustStore::load(&path).unwrap();
+        assert!(loaded.trusted_devices().is_empty());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn updates_only_trusted_device_endpoint() {
+        let path = temp_file("endpoint-devices.tsv");
+        let _ = fs::remove_file(&path);
+        let trusted_id = DeviceId::new("trusted").unwrap();
+        let unknown_id = DeviceId::new("unknown").unwrap();
+
+        let mut store = TrustStore::load(&path).unwrap();
+        store
+            .trust(
+                trusted_id.clone(),
+                "MacBook".to_string(),
+                Platform::MacOs,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(
+            store
+                .update_endpoint_and_key(&trusted_id, "192.168.1.23".to_string(), "aa".repeat(32))
+                .unwrap()
+        );
+        assert!(
+            !store
+                .update_endpoint_and_key(&unknown_id, "192.168.1.24".to_string(), "aa".repeat(32))
+                .unwrap()
+        );
+
+        let loaded = TrustStore::load(&path).unwrap();
+        assert_eq!(
+            loaded.trusted_devices()[0].endpoint.as_deref(),
+            Some("192.168.1.23")
+        );
+        assert_eq!(
+            loaded.trusted_devices()[0].public_key.as_deref(),
+            Some(&"aa".repeat(32)[..])
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn trust_lookup_requires_trusted_state() {
+        let path = temp_file("trusted-lookup.tsv");
+        let _ = fs::remove_file(&path);
+        let trusted_id = DeviceId::new("trusted").unwrap();
+        let revoked_id = DeviceId::new("revoked").unwrap();
+
+        let mut store = TrustStore::load(&path).unwrap();
+        store
+            .trust(
+                trusted_id.clone(),
+                "MacBook".to_string(),
+                Platform::MacOs,
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .trust(
+                revoked_id.clone(),
+                "Old PC".to_string(),
+                Platform::Windows,
+                None,
+                None,
+            )
+            .unwrap();
+        store.revoke(&revoked_id).unwrap();
+
+        assert!(store.trusted_device(&trusted_id).is_some());
+        assert!(store.trusted_device(&revoked_id).is_none());
+        assert!(
+            store
+                .trusted_device(&DeviceId::new("unknown").unwrap())
+                .is_none()
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    fn temp_file(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("span-{}-{}", std::process::id(), name))
+    }
+}

@@ -1,6 +1,6 @@
-# iOS App 计划
+# Span iOS App 计划
 
-iOS 端单独做，不并进 PC daemon。第一版目标不是后台监听，而是系统允许的一键触发。
+iOS 端单独做，不并进 PC 端常驻进程。第一版目标不是后台监听，而是系统允许的一键触发。
 
 ## 现实边界
 
@@ -13,7 +13,7 @@ iOS 端单独做，不并进 PC daemon。第一版目标不是后台监听，而
 优先级：
 
 1. Shortcuts Action：读取当前剪贴板并发送到可信 PC
-2. Share Extension：选中文本后分享给 `rs-cp`
+2. Share Extension：选中文本后分享给 `span`
 3. App 主界面：发现设备、信任设备、移除设备
 4. Back Tap / Action Button：绑定快捷指令触发
 
@@ -27,8 +27,9 @@ iOS 端单独做，不并进 PC daemon。第一版目标不是后台监听，而
 
 ## 与 PC 端协议
 
-- 设备发现：兼容 `46792/UDP`，或 App 内手动填 IP
-- 文本发送：兼容 `46793/TCP`
+- 设备发现：兼容 `46792/UDP`，`SPAN_DISCOVERY_V2`
+- 文本发送：兼容 `46793/TCP`，`SPAN_TEXT_V3`
+- 加密：`X25519 + HKDF-SHA256 + ChaCha20-Poly1305`
 - 信任列表：iOS 本地保存已信任 PC
 - 发送策略：默认广播到所有已信任 PC
 

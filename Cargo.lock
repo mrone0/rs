@@ -222,23 +222,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rs-cp-core"
-version = "0.1.0"
-
-[[package]]
-name = "rs-cp-daemon"
-version = "0.1.0"
-dependencies = [
- "chacha20poly1305",
- "hkdf",
- "rand_core",
- "rs-cp-core",
- "sha2",
- "windows-sys",
- "x25519-dalek",
-]
-
-[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -263,6 +246,24 @@ dependencies = [
  "cpufeatures",
  "digest",
 ]
+
+[[package]]
+name = "span"
+version = "0.1.0"
+dependencies = [
+ "chacha20poly1305",
+ "hkdf",
+ "libc",
+ "rand_core",
+ "sha2",
+ "span-core",
+ "windows-sys",
+ "x25519-dalek",
+]
+
+[[package]]
+name = "span-core"
+version = "0.1.0"
 
 [[package]]
 name = "subtle"

@@ -1,0 +1,23 @@
+name: iOS Check
+
+on:
+  push:
+    paths:
+      - 'apps/ios/**'
+      - 'scripts/ios-typecheck.sh'
+      - '.github/workflows/ios-check.yml'
+  pull_request:
+    paths:
+      - 'apps/ios/**'
+      - 'scripts/ios-typecheck.sh'
+      - '.github/workflows/ios-check.yml'
+  workflow_dispatch:
+
+jobs:
+  typecheck:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Typecheck iOS sources
+        run: ./scripts/ios-typecheck.sh

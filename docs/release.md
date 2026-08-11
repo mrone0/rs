@@ -1,15 +1,15 @@
 # 发布与打包
 
-PC 端不要求用户本地构建，直接用 GitHub Actions 产物。
+PC 端不要求用户本地构建，直接用 GitHub Actions 产物。当前第一版仍以文本同步为主，后续可扩展为更广义的数据互通。
 
 ## 自动打包
 
 `.github/workflows/release.yml` 会构建：
 
-- `rs-cp-macos-arm64.tar.gz`
-- `rs-cp-macos-x64.tar.gz`
-- `rs-cp-windows-x64.zip`
-- `rs-cp-linux-x64.tar.gz`
+- `span-macos-arm64.tar.gz`
+- `span-macos-x64.tar.gz`
+- `span-windows-x64.zip`
+- `span-linux-x64.tar.gz`
 
 触发方式：
 
@@ -24,7 +24,7 @@ git push origin v0.1.0
 
 每个包包含：
 
-- `rs-cp-daemon` / `rs-cp-daemon.exe`
+- `span` / `span.exe`
 - `README.md`
 - `pc-mvp.md`
 - `discovery-protocol.md`
@@ -33,13 +33,13 @@ git push origin v0.1.0
 
 ```sh
 cargo test --workspace
-cargo build --release -p rs-cp-daemon
-./target/release/rs-cp-daemon ui
+cargo build --release -p span
+./target/release/span ui
 ```
 
 ## 体积目标
 
-当前 macOS release 二进制约 `346K`。
+当前 release 二进制仍保持在几百 KB 量级。
 
 保持体积小的原则：
 

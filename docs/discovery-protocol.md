@@ -24,20 +24,20 @@
 广播 payload：
 
 ```text
-RSCP_DISCOVERY_V1\t<device_id>\t<device_name>\t<platform>
+SPAN_DISCOVERY_V2\t<device_id>\t<device_name>\t<platform>
 ```
 
 示例：
 
 ```text
-RSCP_DISCOVERY_V1\tmacbook-1723281000000\tMacBook\tmacos
+SPAN_DISCOVERY_V2\tmacbook-1723281000000\tMacBook\tmacos
 ```
 
 字段：
 
 | 字段 | 说明 |
 |---|---|
-| `magic` | 固定为 `RSCP_DISCOVERY_V1` |
+| `magic` | 固定为 `SPAN_DISCOVERY_V2` |
 | `device_id` | 本机生成并保存的设备 ID |
 | `device_name` | 本机设备名 |
 | `platform` | `windows` / `macos` / `linux` |
@@ -54,14 +54,14 @@ Discovered → Trusted → Revoked
 
 接收端也会校验 `from_device_id` 是否仍在本机的 `Trusted` 列表里；不可信发送方的 TCP 文本会直接丢弃。
 
-文本载荷现在使用 `XChaCha20-Poly1305` 加密，密钥由本机私钥和对端公钥经 `X25519 + HKDF-SHA256` 派生。
+文本载荷现在使用 `ChaCha20-Poly1305` 加密，密钥由本机私钥和对端公钥经 `X25519 + HKDF-SHA256` 派生。
 
 ## Text Packet
 
 文本传输走 TCP，payload：
 
 ```text
-RSCP_TEXT_V1\t<from_device_id>\t<byte_len>\n<utf8_text>
+SPAN_TEXT_V3\t<from_device_id>\t<byte_len>\n<utf8_text>
 ```
 
 限制：
@@ -73,12 +73,12 @@ RSCP_TEXT_V1\t<from_device_id>\t<byte_len>\n<utf8_text>
 
 ## 安全边界
 
-当前 MVP 还没有加密和身份签名，只适合本地开发/可信局域网验证。
+当前 MVP 已经做了加密与可信设备校验，但仍建议只在可信局域网内使用。
 
-正式公开版本需要补：
+正式公开版本后续可继续补强：
 
 - 设备指纹
 - 首次信任确认
-- 会话密钥
-- 消息签名或 AEAD 加密
+- 会话密钥轮换
+- 消息签名审计
 - 防重放 nonce

@@ -1,0 +1,24 @@
+[package]
+name = "rs-cp-daemon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rs-cp-core = { path = "../rs-cp-core" }
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["std"] }
+hkdf = "0.12"
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_SystemServices",
+  "Win32_System_LibraryLoader",
+  "Win32_Graphics_Gdi",
+  "Win32_UI_WindowsAndMessaging",
+] }

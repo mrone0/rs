@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["crates/rs-cp-core", "crates/rs-cp-daemon"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

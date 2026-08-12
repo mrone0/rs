@@ -135,14 +135,18 @@ fn process_running(pid: u32) -> bool {
 #[cfg(windows)]
 fn process_running(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
     use windows_sys::Win32::System::Threading::{
-        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, SYNCHRONIZE, WAIT_TIMEOUT,
-        WaitForSingleObject,
+        OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
 
     unsafe {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid);
-        if handle == 0 {
+        let handle = OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            0,
+            pid,
+        );
+        if handle.is_null() {
             return false;
         }
 
@@ -170,7 +174,7 @@ fn terminate_process(pid: u32) -> io::Result<()> {
 
     unsafe {
         let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-        if handle == 0 {
+        if handle.is_null() {
             return Err(io::Error::last_os_error());
         }
 

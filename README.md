@@ -50,7 +50,7 @@ flowchart LR
 - `docs/discovery-protocol.md`：设备发现和文本传输协议
 - `docs/pc-mvp.md`：PC 端 MVP 使用说明
 - `docs/release.md`：GitHub Actions 发布说明
-- `apps/android`：Android V1 App（剪贴板一键发送 / 分享菜单 / Quick Settings Tile）
+- `apps/android`：Android V1 App（双向文本、剪贴板一键发送 / 分享菜单 / Quick Settings Tile / 接收服务）
 - `apps/android/README.md`：Android 构建、配对和限制
 - `docs/mobile-ios-plan.md`：暂缓的 iOS 方案草稿（当前不参与 V1）
 
@@ -75,7 +75,7 @@ cargo run -p span -- start
 
 ## Android 端
 
-Android V1 通过 App、系统分享菜单或 Quick Settings Tile 触发发送，不做后台剪贴板监听。详见 [`apps/android/README.md`](apps/android/README.md)。
+Android V1 支持 Android → PC 主动发送，也支持 PC → Android 接收并写入系统剪贴板；手机端不做后台剪贴板读取监听。详见 [`apps/android/README.md`](apps/android/README.md)。
 
 ```sh
 cd apps/android

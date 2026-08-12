@@ -34,6 +34,22 @@ final class SpanStore {
         return identity;
     }
 
+
+    boolean isReceiverEnabled() {
+        return prefs.getBoolean("receiver.enabled", true);
+    }
+
+    void setReceiverEnabled(boolean enabled) {
+        prefs.edit().putBoolean("receiver.enabled", enabled).apply();
+    }
+
+    SpanDevice trustedDevice(String id) {
+        for (SpanDevice device : loadDevices()) {
+            if (device.trusted && device.id.equals(id)) return device;
+        }
+        return null;
+    }
+
     List<SpanDevice> loadDevices() {
         List<SpanDevice> devices = new ArrayList<>();
         String raw = prefs.getString("devices", "[]");
@@ -78,10 +94,17 @@ final class SpanStore {
         for (SpanDevice existing : devices) {
             if (existing.id.equals(discovered.id)) {
                 boolean trusted = existing.trusted || discovered.trusted;
+                boolean keyMatches = existing.publicKeyHex == null
+                        || discovered.publicKeyHex == null
+                        || existing.publicKeyHex.equalsIgnoreCase(discovered.publicKeyHex);
                 existing.name = discovered.name;
                 existing.platform = discovered.platform;
-                existing.host = discovered.host;
-                existing.publicKeyHex = discovered.publicKeyHex;
+                // A trusted device key is pinned. An unauthenticated discovery
+                // packet must not silently redirect trusted traffic.
+                if (!existing.trusted || keyMatches) {
+                    existing.host = discovered.host;
+                    existing.publicKeyHex = discovered.publicKeyHex;
+                }
                 existing.lastSeenMillis = discovered.lastSeenMillis;
                 existing.trusted = trusted;
                 saveDevices(devices);

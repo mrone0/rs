@@ -8,5 +8,6 @@ final class SpanProtocol {
     static final String DISCOVERY_MAGIC = "SPAN_DISCOVERY_V2";
     static final String TEXT_MAGIC = "SPAN_TEXT_V3";
     static final byte[] TEXT_KEY_INFO = "span-text-v3".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    static final int NONCE_BYTES = 12;
     static final int MAX_TEXT_BYTES = 64 * 1024;
 }

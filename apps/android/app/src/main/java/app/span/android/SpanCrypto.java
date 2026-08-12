@@ -20,19 +20,29 @@ final class SpanCrypto {
     }
 
     static Encrypted encryptText(String text, String localPrivateKeyHex, String peerPublicKeyHex) throws Exception {
+        byte[] nonce = new byte[SpanProtocol.NONCE_BYTES];
+        new SecureRandom().nextBytes(nonce);
+        byte[] ciphertextAndTag = cryptText(Cipher.ENCRYPT_MODE, text.getBytes(StandardCharsets.UTF_8), localPrivateKeyHex, peerPublicKeyHex, nonce);
+        return new Encrypted(Hex.encode(nonce), Hex.encode(ciphertextAndTag));
+    }
+
+    static String decryptText(SpanTextPacket packet, String localPrivateKeyHex, String peerPublicKeyHex) throws Exception {
+        byte[] plaintext = cryptText(Cipher.DECRYPT_MODE, packet.ciphertextAndTag, localPrivateKeyHex, peerPublicKeyHex, packet.nonce);
+        return new String(plaintext, StandardCharsets.UTF_8);
+    }
+
+    private static byte[] cryptText(int mode, byte[] input, String localPrivateKeyHex, String peerPublicKeyHex, byte[] nonce) throws Exception {
         byte[] privateKey = Hex.decode(localPrivateKeyHex);
         byte[] peerPublicKey = Hex.decode(peerPublicKeyHex);
         if (privateKey == null || privateKey.length != 32) throw new IllegalArgumentException("bad private key");
         if (peerPublicKey == null || peerPublicKey.length != 32) throw new IllegalArgumentException("bad peer public key");
+        if (nonce == null || nonce.length != SpanProtocol.NONCE_BYTES) throw new IllegalArgumentException("bad nonce");
         byte[] shared = X25519.shared(privateKey, peerPublicKey);
         byte[] key = hkdfSha256(shared, SpanProtocol.TEXT_KEY_INFO, 32);
-        byte[] nonce = new byte[12];
-        new SecureRandom().nextBytes(nonce);
 
         Cipher cipher = Cipher.getInstance("ChaCha20-Poly1305");
-        cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "ChaCha20"), new IvParameterSpec(nonce));
-        byte[] ciphertextAndTag = cipher.doFinal(text.getBytes(StandardCharsets.UTF_8));
-        return new Encrypted(Hex.encode(nonce), Hex.encode(ciphertextAndTag));
+        cipher.init(mode, new SecretKeySpec(key, "ChaCha20"), new IvParameterSpec(nonce));
+        return cipher.doFinal(input);
     }
 
     private static byte[] hkdfSha256(byte[] ikm, byte[] info, int len) throws Exception {

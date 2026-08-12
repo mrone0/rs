@@ -1,7 +1,9 @@
 package app.span.android;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
@@ -44,7 +46,9 @@ public final class MainActivity extends Activity {
         });
         buildUi();
         discovery.start();
-        setStatus("Discovery running");
+        if (store.isReceiverEnabled()) SpanReceiveService.start(this);
+        requestNotificationPermission();
+        setStatus("Discovery and receiver running");
         handleLaunchIntent(getIntent());
     }
 
@@ -95,8 +99,23 @@ public final class MainActivity extends Activity {
         announce.setOnClickListener(v -> { discovery.announceOnce(); setStatus("Announced"); });
         root.addView(announce);
         Button stop = button("Stop Discovery");
-        stop.setOnClickListener(v -> { discovery.stop(); setStatus("Stopped"); });
+        stop.setOnClickListener(v -> { discovery.stop(); setStatus("Discovery stopped"); });
         root.addView(stop);
+
+        Button startReceiver = button("Start Receiver");
+        startReceiver.setOnClickListener(v -> {
+            store.setReceiverEnabled(true);
+            SpanReceiveService.start(this);
+            setStatus("Receiver running on TCP " + SpanProtocol.TEXT_PORT);
+        });
+        root.addView(startReceiver);
+        Button stopReceiver = button("Stop Receiver");
+        stopReceiver.setOnClickListener(v -> {
+            store.setReceiverEnabled(false);
+            SpanReceiveService.stop(this);
+            setStatus("Receiver stopped");
+        });
+        root.addView(stopReceiver);
 
         addSection(root, "This Device");
         TextView local = new TextView(this);
@@ -125,6 +144,13 @@ public final class MainActivity extends Activity {
         refreshDevices();
 
         setContentView(scroll);
+    }
+
+    private void requestNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1001);
+        }
     }
 
     private void handleLaunchIntent(Intent intent) {

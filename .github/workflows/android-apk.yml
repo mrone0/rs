@@ -33,10 +33,12 @@ jobs:
       - name: Test and build debug APK
         run: |
           cd apps/android
-          ./gradlew :app:testDebugUnitTest :app:assembleDebug
+          ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: span-android-debug-apk
-          path: apps/android/app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            apps/android/app/build/outputs/apk/debug/app-debug.apk
+            apps/android/app/build/outputs/apk/release/app-release-unsigned.apk

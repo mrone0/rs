@@ -11,7 +11,10 @@ mod macos {
     #![allow(unsafe_op_in_unsafe_fn)]
     use super::io;
     use std::ffi::{CString, c_char, c_void};
-    use std::sync::OnceLock;
+    use std::sync::{
+        OnceLock,
+        atomic::{AtomicBool, Ordering},
+    };
     use std::time::Duration;
 
     use span_core::TrustState;
@@ -25,7 +28,7 @@ mod macos {
     type NSInteger = isize;
     type NSUInteger = usize;
     type BOOL = i8;
-    type IMP = unsafe extern "C" fn(Id, Sel, Id);
+    type IMP = *const c_void;
 
     #[repr(C)]
     #[derive(Clone, Copy)]
@@ -66,6 +69,7 @@ mod macos {
     static STATUS_LABEL: OnceLock<usize> = OnceLock::new();
     static TRUSTED_POPUP: OnceLock<usize> = OnceLock::new();
     static CONTROLLER_CLASS: OnceLock<usize> = OnceLock::new();
+    static ACTION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
     pub fn open() -> io::Result<()> {
         // The GUI is the normal entry point: make the daemon and auto-start
@@ -128,6 +132,7 @@ mod macos {
         if controller.is_null() {
             return Err(io::Error::other("could not create GUI controller"));
         }
+        send_void_id(app, sel("setDelegate:")?, controller);
 
         let rect = Rect {
             origin: Point { x: 0.0, y: 0.0 },
@@ -391,6 +396,17 @@ mod macos {
                 return Err(io::Error::other(format!("could not add GUI action {name}")));
             }
         }
+        let bool_encoding = CString::new("c@:@").unwrap();
+        if class_addMethod(
+            cls,
+            sel("applicationShouldTerminateAfterLastWindowClosed:")?,
+            application_should_terminate_after_last_window_closed
+                as unsafe extern "C" fn(Id, Sel, Id) -> BOOL as IMP,
+            bool_encoding.as_ptr(),
+        ) == 0
+        {
+            return Err(io::Error::other("could not add GUI close action"));
+        }
         objc_registerClassPair(cls);
         let _ = CONTROLLER_CLASS.set(cls as usize);
         Ok(cls)
@@ -467,6 +483,14 @@ mod macos {
         });
     }
 
+    unsafe extern "C" fn application_should_terminate_after_last_window_closed(
+        _: Id,
+        _: Sel,
+        _: Id,
+    ) -> BOOL {
+        1
+    }
+
     unsafe fn confirm_accept(message: &str) -> bool {
         let alert = send_id(class("NSAlert").unwrap(), sel("new").unwrap());
         send_void_id(alert, sel("setMessageText:").unwrap(), ns_string("Span"));
@@ -489,6 +513,9 @@ mod macos {
     }
 
     fn action_result(initial: &str, action: impl FnOnce() -> io::Result<String>) {
+        if ACTION_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+            return;
+        }
         set_status(initial);
         let message = match action() {
             Ok(message) => message,
@@ -498,6 +525,7 @@ mod macos {
         unsafe {
             show_alert(&message);
         }
+        ACTION_IN_PROGRESS.store(false, Ordering::Release);
     }
 
     fn set_status(value: &str) {
@@ -633,6 +661,7 @@ mod windows {
     #![allow(unsafe_op_in_unsafe_fn)]
     use super::io;
     use std::ptr;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use span_core::TrustState;
@@ -653,6 +682,7 @@ mod windows {
 
     static STATUS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     static TRUSTED_LIST: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    static ACTION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
     pub fn prompt_pairing(device_id: &str, name: &str, platform: &str) -> io::Result<()> {
         let prompt = format!(
@@ -878,11 +908,17 @@ mod windows {
     }
 
     unsafe fn run_action(hwnd: HWND, id: u16) {
+        if ACTION_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+            return;
+        }
         set_status("Working…");
         let result = match id {
             ID_DISCOVER => discover_and_pair(),
             ID_REMOVE => remove_selected(),
-            _ => return,
+            _ => {
+                ACTION_IN_PROGRESS.store(false, Ordering::Release);
+                return;
+            }
         };
         match result {
             Ok(message) => {
@@ -895,6 +931,7 @@ mod windows {
                 show_error(hwnd, &error.to_string());
             }
         }
+        ACTION_IN_PROGRESS.store(false, Ordering::Release);
     }
 
     fn discover_and_pair() -> io::Result<String> {

@@ -14,13 +14,19 @@ pub struct TrustStore {
 impl TrustStore {
     pub fn load(path: impl Into<PathBuf>) -> io::Result<Self> {
         let path = path.into();
-        let devices = if path.exists() {
+        let mut devices = if path.exists() {
             parse_devices(&fs::read_to_string(&path)?)
         } else {
             Vec::new()
         };
+        let raw_devices = devices.clone();
+        normalize_devices(&mut devices);
+        let store = Self { path, devices };
+        if store.devices != raw_devices {
+            store.save()?;
+        }
 
-        Ok(Self { path, devices })
+        Ok(store)
     }
 
     pub fn devices(&self) -> &[DeviceInfo] {
@@ -49,6 +55,7 @@ impl TrustStore {
             return Ok(false);
         };
         device.trust_state = TrustState::Trusted;
+        normalize_devices(&mut self.devices);
         self.save()?;
         Ok(true)
     }
@@ -81,19 +88,18 @@ impl TrustStore {
                 public_key,
             });
         }
+        normalize_devices(&mut self.devices);
         self.save()
     }
 
     pub fn record_discovered(&mut self, mut discovered: DeviceInfo) -> io::Result<bool> {
-        let Some(existing) = self
-            .devices
-            .iter_mut()
-            .find(|device| device.id == discovered.id)
-        else {
+        let Some(index) = find_existing_device_index(&self.devices, &discovered) else {
             self.devices.push(discovered);
+            normalize_devices(&mut self.devices);
             self.save()?;
             return Ok(true);
         };
+        let existing = &mut self.devices[index];
 
         if matches!(
             existing.trust_state,
@@ -115,6 +121,7 @@ impl TrustStore {
         let changed = *existing != discovered;
         if changed {
             *existing = discovered;
+            normalize_devices(&mut self.devices);
             self.save()?;
         }
         Ok(changed)
@@ -140,11 +147,10 @@ impl TrustStore {
         endpoint: String,
         public_key: String,
     ) -> io::Result<bool> {
-        let Some(device) = self
-            .devices
-            .iter_mut()
-            .find(|device| &device.id == id && device.trust_state == TrustState::Trusted)
-        else {
+        let Some(device) = self.devices.iter_mut().find(|device| {
+            device.trust_state == TrustState::Trusted
+                && (&device.id == id || device.public_key.as_deref() == Some(public_key.as_str()))
+        }) else {
             return Ok(false);
         };
 
@@ -177,6 +183,16 @@ impl TrustStore {
         self.save()
     }
 
+    pub fn compact(&mut self) -> io::Result<bool> {
+        let before = self.devices.clone();
+        normalize_devices(&mut self.devices);
+        let changed = self.devices != before;
+        if changed {
+            self.save()?;
+        }
+        Ok(changed)
+    }
+
     fn save(&self) -> io::Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
@@ -189,6 +205,100 @@ impl TrustStore {
 
 fn parse_devices(value: &str) -> Vec<DeviceInfo> {
     value.lines().filter_map(parse_device).collect()
+}
+
+fn find_existing_device_index(devices: &[DeviceInfo], discovered: &DeviceInfo) -> Option<usize> {
+    devices
+        .iter()
+        .position(|device| device.id == discovered.id)
+        .or_else(|| {
+            discovered.public_key.as_deref().and_then(|key| {
+                devices.iter().position(|device| {
+                    device
+                        .public_key
+                        .as_deref()
+                        .is_some_and(|existing| existing == key)
+                })
+            })
+        })
+        .or_else(|| {
+            devices.iter().position(|device| {
+                device.public_key.is_none()
+                    && discovered.public_key.is_none()
+                    && device.name == discovered.name
+                    && device.platform == discovered.platform
+            })
+        })
+}
+
+fn normalize_devices(devices: &mut Vec<DeviceInfo>) {
+    let mut normalized: Vec<DeviceInfo> = Vec::new();
+    for device in devices.drain(..) {
+        if let Some(index) = find_merge_target(&normalized, &device) {
+            merge_device(&mut normalized[index], device);
+        } else {
+            normalized.push(device);
+        }
+    }
+    *devices = normalized;
+}
+
+fn find_merge_target(devices: &[DeviceInfo], incoming: &DeviceInfo) -> Option<usize> {
+    devices
+        .iter()
+        .position(|device| device.id == incoming.id)
+        .or_else(|| {
+            incoming.public_key.as_deref().and_then(|key| {
+                devices.iter().position(|device| {
+                    device
+                        .public_key
+                        .as_deref()
+                        .is_some_and(|existing| existing == key)
+                })
+            })
+        })
+        .or_else(|| {
+            devices.iter().position(|device| {
+                (device.public_key.is_none() || incoming.public_key.is_none())
+                    && device.name == incoming.name
+                    && device.platform == incoming.platform
+            })
+        })
+}
+
+fn merge_device(existing: &mut DeviceInfo, incoming: DeviceInfo) {
+    existing.trust_state = stronger_trust_state(existing.trust_state, incoming.trust_state);
+    // Same public key means this is the same cryptographic device. Keep the
+    // newest advertised id so future encrypted packets pass sender lookup.
+    existing.id = incoming.id;
+    existing.name = incoming.name;
+    existing.platform = incoming.platform;
+    if incoming.endpoint.is_some() {
+        existing.endpoint = incoming.endpoint;
+    }
+    if existing.public_key.is_none() || existing.trust_state != TrustState::Trusted {
+        if incoming.public_key.is_some() {
+            existing.public_key = incoming.public_key;
+        }
+    }
+}
+
+fn stronger_trust_state(left: TrustState, right: TrustState) -> TrustState {
+    if trust_state_rank(right) > trust_state_rank(left) {
+        right
+    } else {
+        left
+    }
+}
+
+fn trust_state_rank(state: TrustState) -> u8 {
+    match state {
+        TrustState::Discovered => 0,
+        TrustState::Pending => 1,
+        TrustState::Trusted => 2,
+        TrustState::Revoked => 3,
+        TrustState::Blocked => 4,
+    }
 }
 
 fn parse_device(line: &str) -> Option<DeviceInfo> {
@@ -328,15 +438,20 @@ mod tests {
                 .unwrap()
         );
         assert!(
-            !store
+            store
                 .update_endpoint_and_key(&unknown_id, "192.168.1.24".to_string(), "aa".repeat(32))
+                .unwrap()
+        );
+        assert!(
+            !store
+                .update_endpoint_and_key(&unknown_id, "192.168.1.25".to_string(), "bb".repeat(32))
                 .unwrap()
         );
 
         let loaded = TrustStore::load(&path).unwrap();
         assert_eq!(
             loaded.trusted_devices()[0].endpoint.as_deref(),
-            Some("192.168.1.23")
+            Some("192.168.1.24")
         );
         assert_eq!(
             loaded.trusted_devices()[0].public_key.as_deref(),
@@ -418,6 +533,58 @@ mod tests {
             store.trusted_device(&id).unwrap().endpoint.as_deref(),
             Some("192.168.1.11")
         );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_merges_duplicate_history_by_public_key() {
+        let path = temp_file("duplicate-history.tsv");
+        let _ = fs::remove_file(&path);
+        fs::write(
+            &path,
+            concat!(
+                "old-phone\tPhone\tandroid\tdiscovered\t192.168.1.10\t",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n",
+                "new-phone\tPhone\tandroid\ttrusted\t192.168.1.11\t",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+            ),
+        )
+        .unwrap();
+
+        let store = TrustStore::load(&path).unwrap();
+        assert_eq!(store.devices().len(), 1);
+        assert_eq!(store.trusted_devices().len(), 1);
+        assert_eq!(store.trusted_devices()[0].id.as_str(), "new-phone");
+        assert_eq!(
+            store.trusted_devices()[0].endpoint.as_deref(),
+            Some("192.168.1.11")
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn compact_persists_deduplicated_history() {
+        let path = temp_file("compact-history.tsv");
+        let _ = fs::remove_file(&path);
+        fs::write(
+            &path,
+            concat!(
+                "old-phone\tPhone\tandroid\tdiscovered\t192.168.1.10\t",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n",
+                "new-phone\tPhone\tandroid\ttrusted\t192.168.1.11\t",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
+            ),
+        )
+        .unwrap();
+
+        let mut store = TrustStore::load(&path).unwrap();
+        assert!(!store.compact().unwrap());
+
+        let raw = fs::read_to_string(&path).unwrap();
+        assert_eq!(raw.lines().count(), 1);
+        assert!(raw.contains("new-phone"));
 
         let _ = fs::remove_file(&path);
     }

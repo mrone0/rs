@@ -36,9 +36,11 @@ public final class SpanReceiveService extends Service {
     private ServerSocket serverSocket;
     private LocalIdentity identity;
     private SpanStore store;
+    private SpanDiscovery discovery;
     private ClipboardManager clipboard;
     private ClipboardManager.OnPrimaryClipChangedListener clipboardListener;
-    private volatile boolean suppressNextClipboardEvent;
+    private volatile String suppressedRemoteText;
+    private volatile long suppressedRemoteTextUntilMillis;
 
     static void start(Context context) {
         Intent intent = new Intent(context, SpanReceiveService.class).setAction(ACTION_START);
@@ -61,6 +63,9 @@ public final class SpanReceiveService extends Service {
         } catch (Exception e) {
             stopSelf();
         }
+        if (identity != null) {
+            discovery = new SpanDiscovery(this, identity, device -> store.upsertDiscovered(device));
+        }
         clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
         clipboardListener = this::onLocalClipboardChanged;
         createNotificationChannel();
@@ -73,6 +78,7 @@ public final class SpanReceiveService extends Service {
         }
         startForegroundCompat(buildListeningNotification());
         startClipboardWatcher();
+        startDiscovery();
         if (!running && identity != null) {
             running = true;
             executor.execute(this::listenLoop);
@@ -85,6 +91,7 @@ public final class SpanReceiveService extends Service {
         if (serverSocket != null) {
             try { serverSocket.close(); } catch (Exception ignored) {}
         }
+        stopDiscovery();
         stopClipboardWatcher();
         executor.shutdownNow();
         sender.shutdownNow();
@@ -92,6 +99,20 @@ public final class SpanReceiveService extends Service {
     }
 
     @Override public IBinder onBind(Intent intent) { return null; }
+
+    private void startDiscovery() {
+        try {
+            if (discovery != null) discovery.start();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void stopDiscovery() {
+        try {
+            if (discovery != null) discovery.destroy();
+        } catch (Exception ignored) {
+        }
+    }
 
     private void listenLoop() {
         while (running) {
@@ -138,7 +159,8 @@ public final class SpanReceiveService extends Service {
             if (utf8.length > SpanProtocol.MAX_TEXT_BYTES) return;
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard == null) return;
-            suppressNextClipboardEvent = true;
+            suppressedRemoteText = text;
+            suppressedRemoteTextUntilMillis = System.currentTimeMillis() + 3000;
             clipboard.setPrimaryClip(ClipData.newPlainText("Span", text));
             notifyReceived(sender.name, text);
         } catch (Exception ignored) {
@@ -168,18 +190,29 @@ public final class SpanReceiveService extends Service {
     private void onLocalClipboardChanged() {
         sender.execute(() -> {
             try {
-                if (suppressNextClipboardEvent) {
-                    suppressNextClipboardEvent = false;
-                    return;
-                }
                 String text = readClipboardText();
                 if (text == null || text.trim().isEmpty()) return;
+                if (shouldSuppressRemoteEcho(text)) return;
                 new SpanDispatcher(this).sendText(text);
             } catch (Exception ignored) {
                 // Android 10+ may deny clipboard reads while the app is not in the
                 // foreground. The Quick Settings tile remains the explicit fallback.
             }
         });
+    }
+
+    private boolean shouldSuppressRemoteEcho(String text) {
+        String suppressed = suppressedRemoteText;
+        if (suppressed == null) return false;
+        if (System.currentTimeMillis() > suppressedRemoteTextUntilMillis) {
+            suppressedRemoteText = null;
+            suppressedRemoteTextUntilMillis = 0;
+            return false;
+        }
+        if (!suppressed.equals(text)) return false;
+        suppressedRemoteText = null;
+        suppressedRemoteTextUntilMillis = 0;
+        return true;
     }
 
     private String readClipboardText() {

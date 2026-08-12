@@ -181,8 +181,16 @@ fn spawn_discovery_listener(store_path: std::path::PathBuf, local: LocalDevice) 
                     let mut store = TrustStore::load(&store_path)?;
                     let mut info = packet.into_device_info();
                     info.endpoint = Some(endpoint.clone());
+                    let known_before = store.devices().iter().any(|device| {
+                        device.id == info.id
+                            || (device.public_key.is_some() && device.public_key == info.public_key)
+                    });
+                    let trusted_before = store.trusted_devices().iter().any(|device| {
+                        device.id == info.id
+                            || (device.public_key.is_some() && device.public_key == info.public_key)
+                    });
                     let changed = store.record_discovered(info.clone())?;
-                    if info.trust_state == TrustState::Trusted
+                    if trusted_before
                         && store.update_endpoint_and_key(
                             &info.id,
                             endpoint.clone(),
@@ -190,7 +198,7 @@ fn spawn_discovery_listener(store_path: std::path::PathBuf, local: LocalDevice) 
                         )?
                     {
                         println!("updated endpoint for {}: {endpoint}", info.name);
-                    } else if changed {
+                    } else if !known_before && changed {
                         println!("discovered device: {} ({})", info.name, info.id);
                         notify_gui_pairing_request(&info);
                     }
@@ -507,6 +515,7 @@ fn scan_devices(local: &LocalDevice, timeout: Duration) -> io::Result<Vec<span_c
         }
         Err(error) => return Err(error),
     }
+    let _ = store.compact()?;
 
     Ok(store
         .devices()

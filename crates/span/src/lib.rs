@@ -36,11 +36,7 @@ pub fn run() -> io::Result<()> {
         // The standalone release bundle is GUI-first too: launching `span`
         // directly opens the companion native GUI when available. The npm
         // launcher does the same without briefly attaching a terminal.
-        return gui::open().or_else(|error| {
-            eprintln!("Span GUI unavailable: {error}");
-            print_help();
-            Ok(())
-        });
+        return open_gui_command();
     };
 
     match command.as_str() {
@@ -71,13 +67,34 @@ pub fn run() -> io::Result<()> {
         "send-text" => send_text_command(args.collect()),
         "receive-once" => receive_once(),
         "uninstall" => uninstall_autostart(),
-        "gui" | "ui" => gui::open(),
+        "gui" | "ui" | "open" => open_gui_command(),
         _ => {
             eprintln!("unknown command: {command}");
             print_help();
             Ok(())
         }
     }
+}
+
+fn open_gui_command() -> io::Result<()> {
+    let exe = gui_executable_path()?;
+    if !exe.exists() {
+        return gui::open().or_else(|error| {
+            eprintln!("Span GUI unavailable: {error}");
+            print_help();
+            Ok(())
+        });
+    }
+
+    let mut command = std::process::Command::new(exe);
+    command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    detach_gui_command(&mut command);
+    command.spawn()?;
+    println!("span gui opened");
+    Ok(())
 }
 
 fn run_daemon() -> io::Result<()> {
@@ -160,6 +177,9 @@ fn spawn_discovery_listener(store_path: std::path::PathBuf, local: LocalDevice) 
                     }
 
                     let endpoint = addr.ip().to_string();
+                    let fixed_discovery_addr =
+                        std::net::SocketAddr::new(addr.ip(), crate::discovery::DISCOVERY_PORT);
+                    let _ = respond_to_probe(&local, fixed_discovery_addr);
                     let mut store = TrustStore::load(&store_path)?;
                     let mut info = packet.into_device_info();
                     info.endpoint = Some(endpoint.clone());

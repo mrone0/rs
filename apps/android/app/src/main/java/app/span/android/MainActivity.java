@@ -39,7 +39,7 @@ public final class MainActivity extends Activity {
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
-        discovery = new SpanDiscovery(identity, device -> {
+        discovery = new SpanDiscovery(this, identity, device -> {
             store.upsertDiscovered(device);
             setStatus("Found " + device.name);
             refreshDevices();

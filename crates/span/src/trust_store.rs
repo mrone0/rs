@@ -1,5 +1,5 @@
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::PathBuf;
 
 use span_core::{DeviceId, DeviceInfo, Platform, TrustState};
@@ -181,7 +181,9 @@ impl TrustStore {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(&self.path, serialize_devices(&self.devices))
+        let mut file = fs::File::create(&self.path)?;
+        file.write_all(serialize_devices(&self.devices).as_bytes())?;
+        file.sync_all()
     }
 }
 
@@ -378,6 +380,43 @@ mod tests {
             store
                 .trusted_device(&DeviceId::new("unknown").unwrap())
                 .is_none()
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn discovery_keeps_existing_trust_state() {
+        let path = temp_file("discovery-trust.tsv");
+        let _ = fs::remove_file(&path);
+        let id = DeviceId::new("trusted").unwrap();
+
+        let mut store = TrustStore::load(&path).unwrap();
+        store
+            .trust(
+                id.clone(),
+                "Phone".to_string(),
+                Platform::Android,
+                Some("192.168.1.10".to_string()),
+                Some("aa".repeat(32)),
+            )
+            .unwrap();
+
+        store
+            .record_discovered(DeviceInfo {
+                id: id.clone(),
+                name: "Phone".to_string(),
+                platform: Platform::Android,
+                trust_state: TrustState::Discovered,
+                endpoint: Some("192.168.1.11".to_string()),
+                public_key: Some("aa".repeat(32)),
+            })
+            .unwrap();
+
+        assert!(store.trusted_device(&id).is_some());
+        assert_eq!(
+            store.trusted_device(&id).unwrap().endpoint.as_deref(),
+            Some("192.168.1.11")
         );
 
         let _ = fs::remove_file(&path);

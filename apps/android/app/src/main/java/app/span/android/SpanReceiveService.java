@@ -31,10 +31,14 @@ public final class SpanReceiveService extends Service {
     private static final int MAX_PACKET_BYTES = (SpanProtocol.MAX_TEXT_BYTES + 32) * 2 + 256;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService sender = Executors.newSingleThreadExecutor();
     private volatile boolean running;
     private ServerSocket serverSocket;
     private LocalIdentity identity;
     private SpanStore store;
+    private ClipboardManager clipboard;
+    private ClipboardManager.OnPrimaryClipChangedListener clipboardListener;
+    private volatile boolean suppressNextClipboardEvent;
 
     static void start(Context context) {
         Intent intent = new Intent(context, SpanReceiveService.class).setAction(ACTION_START);
@@ -57,6 +61,8 @@ public final class SpanReceiveService extends Service {
         } catch (Exception e) {
             stopSelf();
         }
+        clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        clipboardListener = this::onLocalClipboardChanged;
         createNotificationChannel();
     }
 
@@ -66,6 +72,7 @@ public final class SpanReceiveService extends Service {
             return START_NOT_STICKY;
         }
         startForegroundCompat(buildListeningNotification());
+        startClipboardWatcher();
         if (!running && identity != null) {
             running = true;
             executor.execute(this::listenLoop);
@@ -78,7 +85,9 @@ public final class SpanReceiveService extends Service {
         if (serverSocket != null) {
             try { serverSocket.close(); } catch (Exception ignored) {}
         }
+        stopClipboardWatcher();
         executor.shutdownNow();
+        sender.shutdownNow();
         super.onDestroy();
     }
 
@@ -129,11 +138,59 @@ public final class SpanReceiveService extends Service {
             if (utf8.length > SpanProtocol.MAX_TEXT_BYTES) return;
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard == null) return;
+            suppressNextClipboardEvent = true;
             clipboard.setPrimaryClip(ClipData.newPlainText("Span", text));
             notifyReceived(sender.name, text);
         } catch (Exception ignored) {
             // Invalid authentication, malformed data, or a revoked key is discarded.
         }
+    }
+
+    private void startClipboardWatcher() {
+        try {
+            if (clipboard != null && clipboardListener != null) {
+                clipboard.removePrimaryClipChangedListener(clipboardListener);
+                clipboard.addPrimaryClipChangedListener(clipboardListener);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void stopClipboardWatcher() {
+        try {
+            if (clipboard != null && clipboardListener != null) {
+                clipboard.removePrimaryClipChangedListener(clipboardListener);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void onLocalClipboardChanged() {
+        sender.execute(() -> {
+            try {
+                if (suppressNextClipboardEvent) {
+                    suppressNextClipboardEvent = false;
+                    return;
+                }
+                String text = readClipboardText();
+                if (text == null || text.trim().isEmpty()) return;
+                new SpanDispatcher(this).sendText(text);
+            } catch (Exception ignored) {
+                // Android 10+ may deny clipboard reads while the app is not in the
+                // foreground. The Quick Settings tile remains the explicit fallback.
+            }
+        });
+    }
+
+    private String readClipboardText() {
+        if (clipboard == null || !clipboard.hasPrimaryClip()) return null;
+        ClipData clip = clipboard.getPrimaryClip();
+        if (clip == null || clip.getItemCount() == 0) return null;
+        CharSequence text = clip.getItemAt(0).coerceToText(this);
+        if (text == null) return null;
+        String value = text.toString();
+        if (value.getBytes(StandardCharsets.UTF_8).length > SpanProtocol.MAX_TEXT_BYTES) return null;
+        return value;
     }
 
     private String readLineBounded(InputStream input) throws Exception {

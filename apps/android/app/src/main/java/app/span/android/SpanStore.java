@@ -30,7 +30,7 @@ final class SpanStore {
                 .putString("identity.name", identity.name)
                 .putString("identity.private", identity.privateKeyHex)
                 .putString("identity.public", identity.publicKeyHex)
-                .apply();
+                .commit();
         return identity;
     }
 
@@ -40,7 +40,7 @@ final class SpanStore {
     }
 
     void setReceiverEnabled(boolean enabled) {
-        prefs.edit().putBoolean("receiver.enabled", enabled).apply();
+        prefs.edit().putBoolean("receiver.enabled", enabled).commit();
     }
 
     SpanDevice trustedDevice(String id) {
@@ -86,7 +86,9 @@ final class SpanStore {
                 array.put(o);
             }
         } catch (Exception ignored) {}
-        prefs.edit().putString("devices", array.toString()).apply();
+        // Trust is security state. Persist it before returning so a process kill
+        // or reboot immediately after pairing cannot discard the confirmation.
+        prefs.edit().putString("devices", array.toString()).commit();
     }
 
     void upsertDiscovered(SpanDevice discovered) {

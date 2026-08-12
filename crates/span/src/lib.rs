@@ -114,7 +114,6 @@ fn run_daemon() -> io::Result<()> {
     spawn_discovery_listener(store_path.clone(), local.clone());
 
     let mut clipboard = system_clipboard();
-    let mut last_text = clipboard.read_text().unwrap_or(None);
     let mut last_change_count = clipboard.change_count().unwrap_or(None);
     let mut next_announce = std::time::Instant::now();
 
@@ -147,8 +146,7 @@ fn run_daemon() -> io::Result<()> {
         }
 
         match clipboard.read_text() {
-            Ok(Some(text)) if last_text.as_deref() != Some(text.as_str()) => {
-                last_text = Some(text.clone());
+            Ok(Some(text)) => {
                 if should_suppress(&suppressed_text, &text) {
                     thread::sleep(Duration::from_millis(350));
                     continue;

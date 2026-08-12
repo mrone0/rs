@@ -4,9 +4,11 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.pm.ShortcutInfo;
+import android.content.pm.ShortcutManager;
+import android.graphics.drawable.Icon;
 import android.os.Bundle;
 import android.view.Gravity;
-import android.view.View;
 import android.widget.Button;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -39,6 +41,7 @@ public final class MainActivity extends Activity {
             refreshDevices();
         });
         buildUi();
+        installQuickSendShortcut();
         store.setReceiverEnabled(true);
         discovery.start();
         SpanReceiveService.start(this);
@@ -81,11 +84,6 @@ public final class MainActivity extends Activity {
         status.setPadding(0, dp(12), 0, dp(12));
         root.addView(status);
 
-        addSection(root, "Actions");
-        Button sendClipboard = button("Send Clipboard");
-        sendClipboard.setOnClickListener(v -> sendClipboard());
-        root.addView(sendClipboard);
-
         Button discover = button("Discover Devices");
         discover.setOnClickListener(v -> { discovery.announceOnce(); setStatus("Discovery requested"); });
         root.addView(discover);
@@ -111,6 +109,21 @@ public final class MainActivity extends Activity {
                 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1001);
         }
+    }
+
+    private void installQuickSendShortcut() {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.N_MR1) return;
+        Intent intent = new Intent(this, MainActivity.class)
+                .setAction(ACTION_SEND_CLIPBOARD)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        ShortcutInfo shortcut = new ShortcutInfo.Builder(this, "send-clipboard")
+                .setShortLabel("Send clipboard")
+                .setLongLabel("Wake Span and send clipboard")
+                .setIcon(Icon.createWithResource(this, R.drawable.ic_span))
+                .setIntent(intent)
+                .build();
+        ShortcutManager manager = getSystemService(ShortcutManager.class);
+        if (manager != null) manager.setDynamicShortcuts(java.util.Collections.singletonList(shortcut));
     }
 
     private void handleLaunchIntent(Intent intent) {
@@ -177,10 +190,10 @@ public final class MainActivity extends Activity {
             row.setOrientation(LinearLayout.VERTICAL);
             row.setPadding(0, dp(8), 0, dp(8));
             TextView label = new TextView(this);
-            label.setText(device.name + "  •  " + device.platform + "  •  " + (device.trusted ? "Trusted" : "New") +
-                    "\n" + (device.host == null ? "-" : device.host) + "  •  " + shortKey(device.publicKeyHex));
+            label.setText(device.name + "  -  " + device.platform + "  -  " + (device.trusted ? "Trusted" : "New") +
+                    "\n" + (device.host == null ? "-" : device.host) + "  -  " + shortKey(device.publicKeyHex));
             row.addView(label);
-            Button trust = button(device.trusted ? "Remove" : "Trust");
+            Button trust = button(device.trusted ? "Remove trusted device" : "Trust device");
             trust.setOnClickListener(v -> {
                 store.setTrusted(device.id, !device.trusted);
                 refreshDevices();

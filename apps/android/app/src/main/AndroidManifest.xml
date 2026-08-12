@@ -44,7 +44,7 @@
         <service
             android:name=".SpanTileService"
             android:exported="true"
-            android:label="Send Clipboard"
+            android:label="Wake Span"
             android:icon="@drawable/ic_span"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>

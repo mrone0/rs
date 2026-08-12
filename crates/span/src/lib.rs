@@ -4,6 +4,7 @@ mod config;
 mod crypto;
 mod daemon_control;
 mod discovery;
+mod gui;
 mod transport;
 mod trust_store;
 
@@ -16,47 +17,63 @@ use span_core::{DeviceId, TrustState, broadcast_targets};
 
 use crate::clipboard::system_clipboard;
 use crate::config::{
-    LocalDevice, load_or_create_local_device, parse_platform, platform_name, trust_store_path,
+    LocalDevice, gui_executable_path, load_or_create_local_device, parse_platform, platform_name,
+    trust_store_path,
 };
 use crate::crypto::decode_hex;
 use crate::daemon_control::{start_daemon, stop_daemon};
-use crate::discovery::{broadcast_once, listen_forever, listen_once};
+use crate::discovery::{
+    DiscoveryMessage, broadcast_once, discover_once, listen_forever, respond_to_probe,
+};
 use crate::transport::{
     TEXT_PORT, decrypt_text, encrypt_text, receive_text_forever, receive_text_once, send_text,
 };
 use crate::trust_store::TrustStore;
 
-fn main() {
-    if let Err(error) = run() {
-        eprintln!("error: {error}");
-        std::process::exit(1);
-    }
-}
-
-fn run() -> io::Result<()> {
+pub fn run() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
-    let command = args.next().unwrap_or_else(|| "start".to_string());
+    let Some(command) = args.next() else {
+        // The standalone release bundle is GUI-first too: launching `span`
+        // directly opens the companion native GUI when available. The npm
+        // launcher does the same without briefly attaching a terminal.
+        return gui::open().or_else(|error| {
+            eprintln!("Span GUI unavailable: {error}");
+            print_help();
+            Ok(())
+        });
+    };
 
     match command.as_str() {
+        // Public commands: keep this surface intentionally small.
+        "install" => install_span(),
         "start" => start_daemon(),
         "stop" => stop_daemon(),
-        "run" => run_daemon(),
-        "foreground" => run_daemon(),
+        "restart" => restart_daemon(),
+        "discover" => discover_devices(),
+        "accept" => accept_device(args.next()),
+        "send" => send_command(args.collect()),
+        "help" | "--help" | "-h" => {
+            print_help();
+            Ok(())
+        }
+
+        // Compatibility/debug commands. Supported for scripts and diagnostics,
+        // but intentionally hidden from the normal help output.
+        "run" | "foreground" => run_daemon(),
         "status" => print_status(),
         "devices" => print_devices(),
         "trust" => trust_device(args.collect()),
         "revoke" => revoke_device(args.next()),
         "reset" => reset_devices(),
-        "discover" => discover_devices(),
         "announce" => announce_device(),
         "clip-read" => read_clipboard(),
         "clip-write" => write_clipboard(args.collect()),
         "send-text" => send_text_command(args.collect()),
         "receive-once" => receive_once(),
-        "install" => install_autostart(),
         "uninstall" => uninstall_autostart(),
-        "ui" => render_dashboard(),
+        "gui" | "ui" => gui::open(),
         _ => {
+            eprintln!("unknown command: {command}");
             print_help();
             Ok(())
         }
@@ -77,7 +94,7 @@ fn run_daemon() -> io::Result<()> {
     println!("listen : 0.0.0.0:{TEXT_PORT}");
 
     spawn_receiver(local.clone(), suppressed_text.clone());
-    spawn_discovery_listener(store_path.clone(), local.id.clone());
+    spawn_discovery_listener(store_path.clone(), local.clone());
 
     let mut clipboard = system_clipboard();
     let mut last_text = clipboard.read_text().unwrap_or(None);
@@ -127,27 +144,97 @@ fn run_daemon() -> io::Result<()> {
     }
 }
 
-fn spawn_discovery_listener(store_path: std::path::PathBuf, local_id: DeviceId) {
+fn spawn_discovery_listener(store_path: std::path::PathBuf, local: LocalDevice) {
     thread::spawn(move || {
-        if let Err(error) = listen_forever(|packet, addr| {
-            if packet.id == local_id {
-                return Ok(());
-            }
+        if let Err(error) = listen_forever(|message, addr| {
+            match message {
+                DiscoveryMessage::Probe => {
+                    // Reply directly to the scanner's ephemeral port. This
+                    // makes `span discover` immediate without creating a
+                    // broadcast storm between background daemons.
+                    respond_to_probe(&local, addr)?;
+                }
+                DiscoveryMessage::Announcement(packet) => {
+                    if packet.id == local.id {
+                        return Ok(());
+                    }
 
-            let endpoint = addr.ip().to_string();
-            let mut store = TrustStore::load(&store_path)?;
-            if store.update_endpoint_and_key(
-                &packet.id,
-                endpoint.clone(),
-                packet.public_key.clone(),
-            )? {
-                println!("updated endpoint for {}: {endpoint}", packet.name);
+                    let endpoint = addr.ip().to_string();
+                    let mut store = TrustStore::load(&store_path)?;
+                    let mut info = packet.into_device_info();
+                    info.endpoint = Some(endpoint.clone());
+                    let changed = store.record_discovered(info.clone())?;
+                    if info.trust_state == TrustState::Trusted
+                        && store.update_endpoint_and_key(
+                            &info.id,
+                            endpoint.clone(),
+                            info.public_key.clone().unwrap_or_default(),
+                        )?
+                    {
+                        println!("updated endpoint for {}: {endpoint}", info.name);
+                    } else if changed {
+                        println!("discovered device: {} ({})", info.name, info.id);
+                        notify_gui_pairing_request(&info);
+                    }
+                }
             }
             Ok(())
         }) {
             eprintln!("discovery listener stopped: {error}");
         }
     });
+}
+
+fn notify_gui_pairing_request(device: &span_core::DeviceInfo) {
+    // The daemon stays headless; GUI is responsible for showing prompts. When
+    // the GUI is not running, launch the tiny companion GUI with a one-shot
+    // pairing prompt. If the user ignores it, nothing is trusted and clipboard
+    // data is not shared.
+    let Ok(exe) = gui_executable_path() else {
+        return;
+    };
+    if !exe.exists() {
+        return;
+    }
+
+    let mut command = std::process::Command::new(exe);
+    command
+        .arg("pair")
+        .arg(device.id.as_str())
+        .arg(&device.name)
+        .arg(platform_name(device.platform))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    detach_gui_command(&mut command);
+    if let Err(error) = command.spawn() {
+        eprintln!("could not open pairing prompt: {error}");
+    }
+}
+
+#[cfg(unix)]
+fn detach_gui_command(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                Err(io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+    }
+}
+
+#[cfg(windows)]
+fn detach_gui_command(command: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW | DETACHED_PROCESS);
 }
 
 fn spawn_receiver(local: LocalDevice, suppressed_text: Arc<Mutex<Option<String>>>) {
@@ -356,24 +443,59 @@ fn reset_devices() -> io::Result<()> {
 }
 
 fn discover_devices() -> io::Result<()> {
-    println!("listening for span devices for 2s...");
-    let mut store = TrustStore::load(trust_store_path()?)?;
-    for (packet, addr) in listen_once(Duration::from_secs(2))? {
-        let mut info = packet.into_device_info();
-        info.endpoint = Some(addr.ip().to_string());
-        let public_key = info.public_key.clone().unwrap_or_default();
-        let _ = store.record_discovered(info.clone())?;
+    let local = load_or_create_local_device()?;
+    let devices = scan_devices(&local, Duration::from_secs(3))?;
+    if devices.is_empty() {
+        println!("No Span devices found on this network.");
+        return Ok(());
+    }
+
+    println!("Found {} device(s):", devices.len());
+    for (index, device) in devices.iter().enumerate() {
         println!(
-            "- {}\t{}\t{}\t{}\t{}",
-            info.id,
-            info.name,
-            platform_name(info.platform),
-            addr.ip(),
-            public_key
+            "  {}. {} ({}) - {}",
+            index + 1,
+            device.name,
+            platform_name(device.platform),
+            state_label(device.trust_state)
         );
-        println!("  trust: span trust {}", info.id);
+    }
+
+    if devices
+        .iter()
+        .any(|device| device.trust_state != TrustState::Trusted)
+    {
+        println!();
+        println!("Accept a new device with: span accept <number>");
     }
     Ok(())
+}
+
+fn scan_devices(local: &LocalDevice, timeout: Duration) -> io::Result<Vec<span_core::DeviceInfo>> {
+    // If the background daemon is already running, it owns UDP 46792. In
+    // that case use its continuously refreshed store instead of competing for
+    // the socket. This keeps the GUI and CLI usable without stopping the daemon.
+    let mut store = TrustStore::load(trust_store_path()?)?;
+    match discover_once(local, timeout) {
+        Ok(packets) => {
+            for (packet, addr) in packets {
+                if packet.id == local.id {
+                    continue;
+                }
+                let mut info = packet.into_device_info();
+                info.endpoint = Some(addr.ip().to_string());
+                let _ = store.record_discovered(info)?;
+            }
+        }
+        Err(error) => return Err(error),
+    }
+
+    Ok(store
+        .devices()
+        .iter()
+        .filter(|device| device.id != local.id)
+        .cloned()
+        .collect())
 }
 
 fn announce_device() -> io::Result<()> {
@@ -383,33 +505,121 @@ fn announce_device() -> io::Result<()> {
     Ok(())
 }
 
-fn print_help() {
-    println!("usage: span <command>");
-    println!("commands:");
-    println!("  start                       launch background daemon and exit");
-    println!("  stop                        stop background daemon");
-    println!("  run                         start foreground daemon");
-    println!("  status                      show local status");
-    println!("  devices                     list trusted devices");
-    println!("  trust <id>                  trust a discovered device");
-    println!("  trust <id> <name> <platform> [host] [public-key]");
-    println!("  revoke <id>                 remove a trusted device");
-    println!("  reset                       remove all trusted devices");
-    println!("  discover                    listen for LAN devices");
-    println!("  announce                    broadcast this device once");
-    println!("  clip-read                   print current clipboard text");
-    println!("  clip-write <text>           write text to clipboard");
-    println!("  send-text <host> <text>     send text to a PC");
-    println!("  receive-once                receive one text and copy it");
-    println!("  install                     install login autostart");
-    println!("  uninstall                   remove login autostart");
-    println!("  ui                          render minimal text dashboard");
+fn install_span() -> io::Result<()> {
+    let path = autostart::install()?;
+    start_daemon()?;
+    println!("Span installed. Background sync and auto-start are enabled.");
+    println!("Auto-start: {}", path.display());
+    Ok(())
 }
 
-fn install_autostart() -> io::Result<()> {
-    let path = autostart::install()?;
-    println!("installed autostart: {}", path.display());
+fn restart_daemon() -> io::Result<()> {
+    stop_daemon()?;
+    thread::sleep(Duration::from_millis(200));
+    start_daemon()
+}
+
+fn accept_device(selection: Option<String>) -> io::Result<()> {
+    let local = load_or_create_local_device()?;
+    let devices = scan_devices(&local, Duration::from_secs(3))?;
+    let available = devices
+        .iter()
+        .filter(|device| device.trust_state != TrustState::Trusted)
+        .collect::<Vec<_>>();
+
+    if available.is_empty() {
+        println!("No new devices found.");
+        return Ok(());
+    }
+
+    if selection.is_none() && available.len() > 1 {
+        println!("Devices waiting for acceptance:");
+        for (index, device) in available.iter().enumerate() {
+            println!(
+                "  {}. {} ({})",
+                index + 1,
+                device.name,
+                platform_name(device.platform)
+            );
+        }
+        println!();
+        println!("Accept one with: span accept <number>");
+        return Ok(());
+    }
+
+    let selected = match selection {
+        None => available.first().copied(),
+        Some(selection) => selection
+            .parse::<usize>()
+            .ok()
+            .and_then(|number| number.checked_sub(1))
+            .and_then(|index| available.get(index).copied())
+            .or_else(|| {
+                available
+                    .iter()
+                    .copied()
+                    .find(|device| device.id.as_str() == selection)
+            }),
+    };
+
+    let Some(device) = selected else {
+        println!("Device not found. Run `span accept` to see the numbered list.");
+        return Ok(());
+    };
+
+    let mut store = TrustStore::load(trust_store_path()?)?;
+    if store.trust_existing(&device.id)? {
+        println!("Accepted: {}", device.name);
+        println!("Clipboard sync is now allowed for this device.");
+    } else {
+        println!("Device is no longer available. Run `span discover` and try again.");
+    }
     Ok(())
+}
+
+fn send_command(args: Vec<String>) -> io::Result<()> {
+    let text = if args.is_empty() {
+        let mut clipboard = system_clipboard();
+        let Some(text) = clipboard.read_text()? else {
+            println!("Clipboard is empty or does not contain text.");
+            return Ok(());
+        };
+        text
+    } else {
+        args.join(" ")
+    };
+
+    let local = load_or_create_local_device()?;
+    let store_path = trust_store_path()?;
+    let store = TrustStore::load(&store_path)?;
+    let targets = store
+        .trusted_devices()
+        .into_iter()
+        .filter(|device| device.endpoint.is_some() && device.public_key.is_some())
+        .count();
+
+    if targets == 0 {
+        println!("No trusted devices are ready.");
+        println!("Run `span discover`, then `span accept`.");
+        return Ok(());
+    }
+
+    broadcast_clipboard_text(&store_path, &local, text)?;
+    println!("Sent to {targets} trusted device(s).");
+    Ok(())
+}
+
+fn print_help() {
+    println!("Span - cross-device clipboard");
+    println!();
+    println!("  span                         open device manager");
+    println!("  span install                 install and enable auto-start");
+    println!("  span start                   start background sync");
+    println!("  span stop                    stop background sync");
+    println!("  span restart                 restart background sync");
+    println!("  span discover                find devices on this network");
+    println!("  span accept [number|id]      accept a discovered device");
+    println!("  span send [text]             send text, or current clipboard");
 }
 
 fn uninstall_autostart() -> io::Result<()> {
@@ -498,36 +708,28 @@ fn receive_once() -> io::Result<()> {
     Ok(())
 }
 
-fn render_dashboard() -> io::Result<()> {
-    let local = load_or_create_local_device()?;
-    let store = TrustStore::load(trust_store_path()?)?;
-    let trusted = store.trusted_devices();
-
-    println!("╭────────────────────────────────────────────╮");
-    println!("│ span                                      │");
-    println!("├────────────────────────────────────────────┤");
-    println!("│ mode      : background-only               │");
-    println!("│ footprint : minimal                       │");
-    println!("│ payload   : text only                     │");
-    println!("│ device    : {:<29}│", truncate(&local.name, 29));
-    println!("│ targets   : {:<29}│", trusted.len());
-    println!("├────────────────────────────────────────────┤");
-    if trusted.is_empty() {
-        println!("│ no trusted devices                         │");
-    } else {
-        for device in trusted {
-            println!("│ ✓ {:<41}│", truncate(&device.name, 41));
-        }
+fn state_label(state: TrustState) -> &'static str {
+    match state {
+        TrustState::Trusted => "Trusted",
+        TrustState::Revoked => "Removed",
+        TrustState::Blocked => "Blocked",
+        TrustState::Pending => "Pending",
+        TrustState::Discovered => "New",
     }
-    println!("╰────────────────────────────────────────────╯");
-    Ok(())
 }
 
-fn truncate(value: &str, max_chars: usize) -> String {
-    let mut result = value.chars().take(max_chars).collect::<String>();
-    if value.chars().count() > max_chars {
-        result.pop();
-        result.push('…');
+/// Open the native device manager window.
+pub fn open_gui() -> io::Result<()> {
+    let mut args = std::env::args().skip(1);
+    match args.next().as_deref() {
+        Some("pair") => {
+            let id = args
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing device id"))?;
+            let name = args.next().unwrap_or_else(|| "Span device".to_string());
+            let platform = args.next().unwrap_or_else(|| "unknown".to_string());
+            gui::prompt_pairing(&id, &name, &platform)
+        }
+        _ => gui::open(),
     }
-    result
 }

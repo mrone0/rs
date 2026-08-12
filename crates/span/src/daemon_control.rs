@@ -2,7 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io;
 use std::process::{Command, Stdio};
 
-use crate::config::{daemon_log_path, daemon_pid_path};
+use crate::config::{cli_executable_path, daemon_log_path, daemon_pid_path};
 
 pub fn start_daemon() -> io::Result<()> {
     #[cfg(target_os = "macos")]
@@ -21,7 +21,7 @@ pub fn start_daemon() -> io::Result<()> {
         let _ = fs::remove_file(&pid_path);
     }
 
-    let exe = std::env::current_exe()?;
+    let exe = cli_executable_path()?;
     let log_path = daemon_log_path()?;
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)?;

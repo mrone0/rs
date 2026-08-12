@@ -41,6 +41,57 @@ pub fn trust_store_path() -> io::Result<PathBuf> {
     Ok(config_dir()?.join("trusted-devices.tsv"))
 }
 
+/// Return the CLI/daemon executable next to the currently running binary.
+///
+/// The GUI is shipped as a separate binary so it can be launched without a
+/// console. Its daemon and auto-start actions must still invoke `span`, not
+/// `span-gui`.
+pub fn cli_executable_path() -> io::Result<PathBuf> {
+    let current = std::env::current_exe()?;
+    let is_gui = current
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(|name| name == "span-gui")
+        .unwrap_or(false);
+
+    if is_gui {
+        let cli_name = if cfg!(windows) { "span.exe" } else { "span" };
+        Ok(current.with_file_name(cli_name))
+    } else {
+        Ok(current)
+    }
+}
+
+/// Return the companion GUI executable for this installation.
+///
+/// Release bundles keep GUI as a separate executable so Windows can use a
+/// no-console subsystem. macOS may ship the GUI inside `Span.app`, so fall back
+/// to that app layout when no sibling `span-gui` exists.
+pub fn gui_executable_path() -> io::Result<PathBuf> {
+    let current = std::env::current_exe()?;
+    let gui_name = if cfg!(windows) {
+        "span-gui.exe"
+    } else {
+        "span-gui"
+    };
+    let sibling = current.with_file_name(gui_name);
+    if sibling.exists() {
+        return Ok(sibling);
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(dir) = current.parent() {
+            let app_gui = dir.join("Span.app/Contents/MacOS/span-gui");
+            if app_gui.exists() {
+                return Ok(app_gui);
+            }
+        }
+    }
+
+    Ok(sibling)
+}
+
 pub fn daemon_pid_path() -> io::Result<PathBuf> {
     Ok(config_dir()?.join("daemon.pid"))
 }

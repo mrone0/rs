@@ -9,6 +9,13 @@ use crate::crypto::decode_hex;
 
 pub const DISCOVERY_PORT: u16 = 46792;
 const MAGIC: &str = "SPAN_DISCOVERY_V2";
+const PROBE_MAGIC: &str = "SPAN_DISCOVERY_PROBE_V1";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DiscoveryMessage {
+    Announcement(DiscoveryPacket),
+    Probe,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiscoveryPacket {
@@ -48,9 +55,16 @@ pub fn broadcast_once(device: &LocalDevice) -> io::Result<()> {
     Ok(())
 }
 
-pub fn listen_once(timeout: Duration) -> io::Result<Vec<(DiscoveryPacket, SocketAddr)>> {
-    let socket = UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT))?;
+pub fn discover_once(
+    _device: &LocalDevice,
+    timeout: Duration,
+) -> io::Result<Vec<(DiscoveryPacket, SocketAddr)>> {
+    // Use an ephemeral source port. The daemon owns UDP 46792, so a manual
+    // scan must not compete with it for the discovery socket.
+    let socket = UdpSocket::bind(("0.0.0.0", 0))?;
+    socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_millis(150)))?;
+    socket.send_to(PROBE_MAGIC.as_bytes(), ("255.255.255.255", DISCOVERY_PORT))?;
 
     let deadline = Instant::now() + timeout;
     let mut buffer = [0_u8; 1024];
@@ -60,7 +74,7 @@ pub fn listen_once(timeout: Duration) -> io::Result<Vec<(DiscoveryPacket, Socket
         match socket.recv_from(&mut buffer) {
             Ok((len, addr)) => {
                 if let Ok(value) = std::str::from_utf8(&buffer[..len]) {
-                    if let Some(packet) = decode_packet(value) {
+                    if let Some(DiscoveryMessage::Announcement(packet)) = decode_message(value) {
                         packets.push((packet, addr));
                     }
                 }
@@ -75,8 +89,15 @@ pub fn listen_once(timeout: Duration) -> io::Result<Vec<(DiscoveryPacket, Socket
     Ok(packets)
 }
 
+pub fn respond_to_probe(device: &LocalDevice, target: SocketAddr) -> io::Result<()> {
+    let socket = UdpSocket::bind(("0.0.0.0", 0))?;
+    let packet = encode_packet(&DiscoveryPacket::from_local(device));
+    socket.send_to(packet.as_bytes(), target)?;
+    Ok(())
+}
+
 pub fn listen_forever(
-    mut on_packet: impl FnMut(DiscoveryPacket, SocketAddr) -> io::Result<()>,
+    mut on_message: impl FnMut(DiscoveryMessage, SocketAddr) -> io::Result<()>,
 ) -> io::Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT))?;
     let mut buffer = [0_u8; 1024];
@@ -84,8 +105,8 @@ pub fn listen_forever(
     loop {
         let (len, addr) = socket.recv_from(&mut buffer)?;
         if let Ok(value) = std::str::from_utf8(&buffer[..len]) {
-            if let Some(packet) = decode_packet(value) {
-                on_packet(packet, addr)?;
+            if let Some(message) = decode_message(value) {
+                on_message(message, addr)?;
             }
         }
     }
@@ -102,18 +123,22 @@ fn encode_packet(packet: &DiscoveryPacket) -> String {
     )
 }
 
-fn decode_packet(value: &str) -> Option<DiscoveryPacket> {
+fn decode_message(value: &str) -> Option<DiscoveryMessage> {
+    if value.trim() == PROBE_MAGIC {
+        return Some(DiscoveryMessage::Probe);
+    }
+
     let mut fields = value.trim().split('\t');
     if fields.next()? != MAGIC {
         return None;
     }
 
-    Some(DiscoveryPacket {
+    Some(DiscoveryMessage::Announcement(DiscoveryPacket {
         id: DeviceId::new(fields.next()?.to_string())?,
         name: fields.next()?.to_string(),
         platform: parse_platform(fields.next()?),
         public_key: fields.next().and_then(validate_public_key)?,
-    })
+    }))
 }
 
 fn validate_public_key(value: &str) -> Option<String> {
@@ -134,6 +159,10 @@ mod tests {
             public_key: "aa".repeat(32),
         };
 
-        assert_eq!(decode_packet(&encode_packet(&packet)), Some(packet));
+        assert_eq!(
+            decode_message(&encode_packet(&packet)),
+            Some(DiscoveryMessage::Announcement(packet))
+        );
+        assert_eq!(decode_message(PROBE_MAGIC), Some(DiscoveryMessage::Probe));
     }
 }

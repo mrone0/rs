@@ -38,10 +38,12 @@ flowchart LR
 
 ## 交互原则
 
-- PC 端不做主窗口
-- 只保留最轻量后台进程
+- PC 端后台由无窗口 daemon 常驻；关闭 GUI 不会停止同步
+- 普通用户只需要原生 GUI 的 `Discover` 和 `Remove selected` 两个操作
+- 首次发现设备时弹窗确认配对；接受后直接使用系统复制/粘贴
+- 每次复制自动发送给全部已信任设备；不会把剪贴板正文广播给陌生设备
+- CLI 仅用于调试、脚本和故障排查
 - 手机端保留一个明确的发送动作
-- 设备必须先进入信任列表，才允许广播
 
 ## 代码结构
 
@@ -68,15 +70,27 @@ span install
 本地测试 npm 包：
 
 ```sh
-cargo build --release -p span
+cargo build --release -p span --bins
 cd npm/span-desktop
 npm pack
 SPAN_LOCAL_BINARY="$PWD/../../target/release/span" \
-  npm install --prefix /tmp/span-npm-prefix ./span-desktop-0.1.2.tgz
-/tmp/span-npm-prefix/node_modules/.bin/span status
+SPAN_LOCAL_GUI_BINARY="$PWD/../../target/release/span-gui" \
+  npm install --prefix /tmp/span-npm-prefix ./span-desktop-*.tgz
+/tmp/span-npm-prefix/node_modules/.bin/span --help
 ```
 
-正式 npm 安装会下载 GitHub Release 中对应平台的包；本地测试通过 `SPAN_LOCAL_BINARY` 避免依赖尚未发布的 Release。
+正式 npm 安装会下载 GitHub Release 中对应平台的包；本地测试需要同时提供 CLI 和 GUI：`SPAN_LOCAL_BINARY`、`SPAN_LOCAL_GUI_BINARY`。
+
+
+## Release 产物
+
+GitHub Actions 的桌面压缩包现在只放最小可运行内容，不再塞 README/协议文档：
+
+- macOS：压缩包里只有 `Span.app`，用户双击即可打开 GUI
+- Windows：只有 `span-gui.exe` 和 `span.exe`，双击 `span-gui.exe` 或终端运行 `span` 都可以
+- Linux：只有 `span` 和 `span-gui`
+
+保留两个桌面二进制是为了同时满足：GUI 双击不弹终端、CLI/daemon 仍可被脚本和自启动调用。
 
 ## 发布
 
@@ -84,18 +98,27 @@ PC 端通过 GitHub Actions 自动打包，不要求用户本地构建。见 `do
 
 iOS 当前暂缓，不纳入 V1 构建和发布；先把 Android → PC 的低占用文本链路验证稳定。
 
-## PC 端命令
+## 桌面端使用
+
+普通用户直接运行：
 
 ```sh
-cargo run -p span -- status
-cargo run -p span -- discover
-cargo run -p span -- announce
-cargo run -p span -- trust <id>
-cargo run -p span -- trust <id> <name> <platform> [host] [public-key]
-cargo run -p span -- start
+span
 ```
 
-`start` 会在后台启动 daemon 并立即返回；`run` 仅用于前台调试。
+它会打开轻量设备管理界面，不需要记 CLI 命令。对外只保留以下简短命令：
+
+```sh
+span install              # 安装并启用登录自启
+span start                # 启动后台同步
+span stop                 # 停止后台同步
+span restart              # 重启后台同步
+span discover             # 查找同一局域网设备
+span accept [编号]        # 接受配对；只有一台时可省略编号
+span send [文本]          # 发送文本；省略文本时发送当前剪贴板
+```
+
+设备发现本身由后台 daemon 自动完成；`discover` 只是需要立即刷新时使用。其他旧子命令仅为兼容调试脚本保留，不显示在普通帮助中。
 
 ## Android 端
 
@@ -105,3 +128,28 @@ Android V1 支持 Android → PC 主动发送，也支持 PC → Android 接收�
 cd apps/android
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :app:testDebugUnitTest :app:assembleDebug
 ```
+
+
+## 快速验证
+
+两台电脑连接同一局域网后，两边分别执行一次：
+
+```sh
+span install
+span discover
+span accept
+```
+
+如果发现多台待配对设备，`span accept` 会显示编号，再执行：
+
+```sh
+span accept 1
+```
+
+配对完成后不需要 Span 专用复制命令，直接使用系统的 `Command/Ctrl+C` 与 `Command/Ctrl+V`。如需手动立即发送当前剪贴板：
+
+```sh
+span send
+```
+
+运行 `span` 或 `span gui` 可打开轻量原生设备管理 GUI。GUI 只显示本机和受信任设备，提供发现、配对确认和删除设备；不提供手动发送、启动同步等重复操作。GUI 不使用 Electron、Flutter 或 WebView。

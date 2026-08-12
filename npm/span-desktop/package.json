@@ -1,6 +1,6 @@
 {
   "name": "span-desktop",
-  "version": "0.1.2-test.0",
+  "version": "0.1.2-test.5",
   "description": "Span cross-device clipboard daemon for macOS, Windows and Linux",
   "license": "MIT",
   "repository": {

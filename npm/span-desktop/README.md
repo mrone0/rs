@@ -8,15 +8,27 @@ or Linux during installation.
 
 ```sh
 npm install -g span-desktop
+span
 span install
 ```
 
-`span install` registers the daemon with the operating system so it runs in the
-background without keeping a terminal window open.
+`span install` registers and starts the daemon so it runs in the background
+without keeping a terminal window open. Run `span` (or `span gui`) for the lightweight native device
+manager. The public CLI stays intentionally small:
+
+```text
+span install
+span start
+span stop
+span restart
+span discover
+span accept [number]
+span send [text]
+```
 
 ## Local package test
 
-Build the Rust binary, then install a local npm tarball using that binary:
+Build the Rust CLI and GUI binaries, then install a local npm tarball using them:
 
 ```sh
 cargo build --release -p span
@@ -24,16 +36,17 @@ cd npm/span-desktop
 npm pack
 SPAN_LOCAL_BINARY="$PWD/../../target/release/span" \
   npm install -g ./span-desktop-0.1.2.tgz
-span status
+span --help
+span
 span install
 ```
 
 `SPAN_LOCAL_BINARY` is only for local development. A normal npm installation
-downloads the matching GitHub Release asset.
+downloads the matching GitHub Release asset. Each desktop archive contains both `span` (CLI + daemon) and `span-gui` (native GUI). Running `span` with no arguments opens the GUI; CLI commands are forwarded to `span`.
 
 ## Environment variables
 
-- `SPAN_LOCAL_BINARY`: use a locally built binary instead of downloading.
+- `SPAN_LOCAL_BINARY` / `SPAN_LOCAL_GUI_BINARY`: use locally built CLI and GUI binaries instead of downloading.
 - `SPAN_VERSION`: override the GitHub Release version, for example `0.1.2`.
 - `SPAN_REPOSITORY`: override the GitHub repository, default `mrone0/rs`.
 - `SPAN_RELEASE_BASE_URL`: override the release asset base URL.

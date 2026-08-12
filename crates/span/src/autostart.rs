@@ -2,6 +2,8 @@ use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+use crate::config::cli_executable_path;
+
 pub fn install() -> io::Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
@@ -64,7 +66,7 @@ fn install_macos_launch_agent() -> io::Result<PathBuf> {
         fs::create_dir_all(parent)?;
     }
 
-    let exe = std::env::current_exe()?;
+    let exe = cli_executable_path()?;
     let plist = format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -153,7 +155,7 @@ fn macos_launch_agent_path() -> io::Result<PathBuf> {
 #[cfg(target_os = "windows")]
 fn install_windows_startup_script() -> io::Result<PathBuf> {
     let path = windows_startup_script_path()?;
-    let exe = std::env::current_exe()?;
+    let exe = cli_executable_path()?;
     let exe_text = exe.to_string_lossy().to_string();
 
     let status = std::process::Command::new("schtasks")
@@ -193,7 +195,7 @@ fn install_linux_desktop_entry() -> io::Result<PathBuf> {
         fs::create_dir_all(parent)?;
     }
 
-    let exe = std::env::current_exe()?;
+    let exe = cli_executable_path()?;
     let entry = format!(
         "[Desktop Entry]\nType=Application\nName=span\nNoDisplay=true\nTerminal=false\nStartupNotify=false\nExec={} run\nX-GNOME-Autostart-enabled=true\n",
         exe.display()

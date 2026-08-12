@@ -6,10 +6,10 @@ PC 端不要求用户本地构建，直接用 GitHub Actions 产物。当前第�
 
 `.github/workflows/release.yml` 会构建：
 
-- `span-macos-arm64.tar.gz`
-- `span-macos-x64.tar.gz`
-- `span-windows-x64.zip`
-- `span-linux-x64.tar.gz`
+- `span-macos-arm64.tar.gz`：只包含 `Span.app`
+- `span-macos-x64.tar.gz`：只包含 `Span.app`
+- `span-windows-x64.zip`：只包含 `span.exe` 和 `span-gui.exe`
+- `span-linux-x64.tar.gz`：只包含 `span` 和 `span-gui`；Linux 当前 GUI 会提示暂不支持
 
 触发方式：
 
@@ -22,19 +22,21 @@ git push origin v0.1.0
 
 ## 包内容
 
-每个包包含：
+包内不再塞 README、协议文档等杂项，只保留可运行内容：
 
-- `span` / `span.exe`
-- `README.md`
-- `pc-mvp.md`
-- `discovery-protocol.md`
+- macOS：`Span.app`，双击打开 GUI；内部带 `span` daemon/CLI 与 `span-gui`
+- Windows：`span-gui.exe` 双击打开 GUI；`span.exe` 用于 CLI 和后台 daemon
+- Linux：`span` CLI/daemon 与 `span-gui` 占位 GUI
+
+Windows/Linux 仍保留两个二进制，是为了让 Windows GUI 使用无控制台子系统，同时 daemon/CLI 保持标准终端行为；这是当前最小且最稳的拆分。
 
 ## 本地验证
 
 ```sh
 cargo test --workspace
-cargo build --release -p span
-./target/release/span ui
+cargo build --release -p span --bins
+./target/release/span-gui
+./target/release/span --help
 ```
 
 ## 体积目标
@@ -47,7 +49,7 @@ cargo build --release -p span
 - 不内置 WebView
 - 不引入数据库
 - 不引入异步 runtime，除非确实需要
-- UI 只保留 CLI/托盘/系统服务入口
+- GUI 只使用平台原生控件；daemon 保持无窗口，CLI 仅保留调试/脚本入口
 
 ## 开源前需要确认
 
@@ -65,18 +67,19 @@ cargo build --release -p span
 npm 包的职责只有两件事：
 
 1. 安装时识别 `macOS arm64/x64`、`Windows x64` 或 `Linux x64`。
-2. 下载对应 GitHub Release 压缩包中的 `span` 二进制，并提供 `span` 命令。
+2. 下载对应 GitHub Release 压缩包，并从 `Span.app` 或最小二进制目录中提取 `span` 与 `span-gui`。`span` 命令无参数打开 GUI；`span install/start/stop/...` 调用 CLI。
 
 因此 npm 层不会引入 Electron，实际常驻进程仍然是 Rust daemon。
 
 ### 本地打包测试
 
 ```sh
-cargo build --release -p span
+cargo build --release -p span --bins
 cd npm/span-desktop
 npm pack
 SPAN_LOCAL_BINARY="$PWD/../../target/release/span" \
-  npm install --prefix /tmp/span-npm-prefix ./span-desktop-0.1.2.tgz
+SPAN_LOCAL_GUI_BINARY="$PWD/../../target/release/span-gui" \
+  npm install --prefix /tmp/span-npm-prefix ./span-desktop-*.tgz
 /tmp/span-npm-prefix/node_modules/.bin/span status
 ```
 
@@ -88,7 +91,7 @@ SPAN_LOCAL_BINARY="$PWD/../../target/release/span" \
 npm login
 npm whoami
 cd npm/span-desktop
-npm version 0.1.2-test.0 --no-git-tag-version
+npm version 0.1.2-test.5 --no-git-tag-version
 npm publish --access public --tag test
 ```
 
@@ -119,7 +122,7 @@ permissions:
   id-token: write
 ```
 
-当前 `release.yml` 已配置 OIDC，不再需要保存 `NPM_TOKEN`。预发布 tag（例如 `v0.1.2-test.0`）进入 npm `test` 通道；正式 tag（例如 `v0.1.2`）进入 `latest`。
+当前 `release.yml` 已配置 OIDC，不再需要保存 `NPM_TOKEN`。预发布 tag（例如 `v0.1.2-test.5`）进入 npm `test` 通道；正式 tag（例如 `v0.1.2`）进入 `latest`。
 
 如果暂时不用 Trusted Publishing，也可以使用短期 Token。GitHub 仓库需要添加：
 
@@ -127,4 +130,4 @@ permissions:
 NPM_TOKEN
 ```
 
-同一版本不能重复发布；例如 `v0.1.2` 对应 `span-desktop@0.1.2`。测试版本对应关系为：`v0.1.2-test.0` → `span-desktop@0.1.2-test.0`。
+同一版本不能重复发布；例如 `v0.1.2` 对应 `span-desktop@0.1.2`。测试版本对应关系为：`v0.1.2-test.5` → `span-desktop@0.1.2-test.5`。

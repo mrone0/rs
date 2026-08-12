@@ -19,6 +19,12 @@ android {
 
     buildTypes {
         release {
+            // Testing/open-source convenience: sign release APK with the standard
+            // Android debug key so GitHub Actions can produce an installable APK
+            // without storing a private release keystore in the repository.
+            // Replace this with a real signingConfig backed by GitHub Secrets
+            // before Play Store or production distribution.
+            signingConfig signingConfigs.debug
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'

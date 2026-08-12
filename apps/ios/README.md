@@ -61,3 +61,25 @@ swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios17.0-simulator \
 ## 备注
 
 iOS 端会单独做成一个 app，不并进 PC daemon。真机运行需要在 Xcode 中配置 Team / Bundle ID，并允许 Local Network 权限。
+## 当前本机验证结果
+
+已验证以下命令可以通过 Swift 6 编译：
+
+```sh
+# 类型检查
+./scripts/ios-typecheck.sh
+
+# iOS Simulator 构建（不签名）
+xcodebuild -project apps/ios/Span.xcodeproj \
+  -scheme Span -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  build CODE_SIGNING_ALLOWED=NO
+
+# iOS 真机架构构建（不签名；用于确认 iphoneos 代码可编译）
+xcodebuild -project apps/ios/Span.xcodeproj \
+  -scheme Span -configuration Debug \
+  -destination 'generic/platform=iOS' \
+  build CODE_SIGNING_ALLOWED=NO
+```
+
+> 上面的 `CODE_SIGNING_ALLOWED=NO` 只能验证代码和真机架构，不能把 App 安装到 iPhone。真机 Run 仍需要在 Xcode 的 Signing & Capabilities 中选择 Team，并为主 App、Share Extension 配置唯一 Bundle ID。当前工程还使用 App Group `group.app.span.ios`；如果只是用个人 Apple ID 做最简单的主 App 验证，可先暂时关闭 Share Extension 和 App Group。

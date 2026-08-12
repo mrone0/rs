@@ -1,11 +1,11 @@
 import Foundation
 
-protocol TrustedDeviceStore {
+protocol TrustedDeviceStore: Sendable {
     func loadDevices() -> [SpanDevice]
     func saveDevices(_ devices: [SpanDevice])
 }
 
-final class UserDefaultsTrustedDeviceStore: TrustedDeviceStore {
+final class UserDefaultsTrustedDeviceStore: TrustedDeviceStore, @unchecked Sendable {
     private let key = "span.trusted.devices.v1"
     private let defaults: UserDefaults
 

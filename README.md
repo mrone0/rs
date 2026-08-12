@@ -54,6 +54,30 @@ flowchart LR
 - `apps/android/README.md`：Android 构建、配对和限制
 - `docs/mobile-ios-plan.md`：暂缓的 iOS 方案草稿（当前不参与 V1）
 
+## npm 安装（桌面端）
+
+桌面端提供 npm 安装器。npm 包本身只包含极小的 Node 启动脚本，安装时根据当前系统下载对应的 Rust 二进制，不引入 Electron 或其他重型运行时。
+
+```sh
+npm install -g span-desktop
+span install
+```
+
+`span install` 会把 daemon 注册为 macOS LaunchAgent、Windows 登录任务或 Linux 自启动项，因此不需要让终端窗口一直开着。
+
+本地测试 npm 包：
+
+```sh
+cargo build --release -p span
+cd npm/span-desktop
+npm pack
+SPAN_LOCAL_BINARY="$PWD/../../target/release/span" \
+  npm install --prefix /tmp/span-npm-prefix ./span-desktop-0.1.2.tgz
+/tmp/span-npm-prefix/node_modules/.bin/span status
+```
+
+正式 npm 安装会下载 GitHub Release 中对应平台的包；本地测试通过 `SPAN_LOCAL_BINARY` 避免依赖尚未发布的 Release。
+
 ## 发布
 
 PC 端通过 GitHub Actions 自动打包，不要求用户本地构建。见 `docs/release.md`。

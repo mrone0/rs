@@ -2,9 +2,9 @@ import AppIntents
 import Foundation
 
 struct SendClipboardIntent: AppIntent {
-    static var title: LocalizedStringResource = "Send Clipboard to Span"
-    static var description = IntentDescription("Send the current clipboard text to trusted devices on the local network.")
-    static var openAppWhenRun = false
+    static let title: LocalizedStringResource = "Send Clipboard to Span"
+    static let description = IntentDescription("Send the current clipboard text to trusted devices on the local network.")
+    static let openAppWhenRun = false
 
     @MainActor
     func perform() async throws -> some IntentResult & ProvidesDialog {
@@ -15,9 +15,9 @@ struct SendClipboardIntent: AppIntent {
 }
 
 struct SendTextIntent: AppIntent {
-    static var title: LocalizedStringResource = "Send Text to Span"
-    static var description = IntentDescription("Send the provided text to trusted devices on the local network.")
-    static var openAppWhenRun = false
+    static let title: LocalizedStringResource = "Send Text to Span"
+    static let description = IntentDescription("Send the provided text to trusted devices on the local network.")
+    static let openAppWhenRun = false
 
     @Parameter(title: "Text")
     var text: String

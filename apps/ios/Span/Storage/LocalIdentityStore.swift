@@ -2,11 +2,11 @@ import CryptoKit
 import Foundation
 import UIKit
 
-protocol LocalIdentityStore {
+protocol LocalIdentityStore: Sendable {
     func loadOrCreate() -> LocalSpanIdentity
 }
 
-final class UserDefaultsLocalIdentityStore: LocalIdentityStore {
+final class UserDefaultsLocalIdentityStore: LocalIdentityStore, @unchecked Sendable {
     private let key = "span.local.identity.v1"
     private let defaults: UserDefaults
 

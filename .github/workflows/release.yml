@@ -13,6 +13,14 @@ jobs:
   build:
     name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    env:
+      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      MACOS_KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+      MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     strategy:
       fail-fast: false
       matrix:
@@ -52,6 +60,54 @@ jobs:
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }} -p span
+
+      - name: Ad-hoc sign macOS binary
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE_P12_BASE64 == ''
+        run: |
+          codesign --force --sign - target/${{ matrix.target }}/release/${{ matrix.bin }}
+          codesign --verify --verbose=2 target/${{ matrix.target }}/release/${{ matrix.bin }}
+
+      - name: Import Developer ID certificate
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE_P12_BASE64 != ''
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/span-signing.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/developer-id.p12"
+          echo "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          IDENTITY="$MACOS_SIGNING_IDENTITY"
+          if [ -z "$IDENTITY" ]; then
+            IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | sed -n 's/.*"\(Developer ID Application:.*\)"/\1/p' | head -n 1)
+          fi
+          if [ -z "$IDENTITY" ]; then
+            echo "No Developer ID Application signing identity found" >&2
+            exit 1
+          fi
+          echo "MACOS_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Developer ID sign macOS binary
+        if: runner.os == 'macOS' && env.MACOS_CERTIFICATE_P12_BASE64 != ''
+        run: |
+          codesign --force --options runtime --timestamp --sign "$MACOS_SIGNING_IDENTITY" target/${{ matrix.target }}/release/${{ matrix.bin }}
+          codesign --verify --verbose=2 target/${{ matrix.target }}/release/${{ matrix.bin }}
+
+      - name: Notarize macOS binary
+        if: runner.os == 'macOS' && env.APPLE_ID != '' && env.APPLE_APP_SPECIFIC_PASSWORD != '' && env.APPLE_TEAM_ID != '' && env.MACOS_CERTIFICATE_P12_BASE64 != ''
+        run: |
+          mkdir -p dist/notary
+          ditto -c -k --keepParent target/${{ matrix.target }}/release/${{ matrix.bin }} dist/notary/span-notary.zip
+          xcrun notarytool submit dist/notary/span-notary.zip \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+          # Raw CLI binaries cannot always be stapled like .app/.pkg/.dmg,
+          # but the notarization ticket is available online to Gatekeeper.
+          xcrun stapler staple target/${{ matrix.target }}/release/${{ matrix.bin }} || true
+          spctl --assess --type execute --verbose=4 target/${{ matrix.target }}/release/${{ matrix.bin }} || true
 
       - name: Stage Unix artifact
         if: runner.os != 'Windows'
@@ -113,7 +169,7 @@ jobs:
         run: |
           mkdir -p dist
           cp apps/android/app/build/outputs/apk/debug/app-debug.apk dist/span-android-debug.apk
-          cp apps/android/app/build/outputs/apk/release/app-release-unsigned.apk dist/span-android-release-unsigned.apk
+          cp apps/android/app/build/outputs/apk/release/app-release.apk dist/span-android-release-debug-signed.apk
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -121,7 +177,7 @@ jobs:
           name: android-apk
           path: |
             dist/span-android-debug.apk
-            dist/span-android-release-unsigned.apk
+            dist/span-android-release-debug-signed.apk
 
       - name: Upload release asset
         if: startsWith(github.ref, 'refs/tags/v')
@@ -129,4 +185,37 @@ jobs:
         with:
           files: |
             dist/span-android-debug.apk
-            dist/span-android-release-unsigned.apk
+            dist/span-android-release-debug-signed.apk
+  publish-npm:
+    name: Publish npm desktop installer
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Align npm version with Git tag
+        working-directory: npm/span-desktop
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
+
+      - name: Publish span-desktop
+        working-directory: npm/span-desktop
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "$VERSION" == *-* ]]; then
+            npm publish --access public --tag test
+          else
+            npm publish --access public
+          fi

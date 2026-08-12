@@ -4,6 +4,12 @@
 <dict>
   <key>CFBundleDisplayName</key>
   <string>Span</string>
+  <key>CFBundleIdentifier</key>
+  <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+  <key>CFBundleShortVersionString</key>
+  <string>$(MARKETING_VERSION)</string>
+  <key>CFBundleVersion</key>
+  <string>$(CURRENT_PROJECT_VERSION)</string>
   <key>NSLocalNetworkUsageDescription</key>
   <string>Span uses local network access to discover and send text to your trusted devices.</string>
   <key>UIApplicationSceneManifest</key>

@@ -1,11 +1,11 @@
 import Foundation
 import Network
 
-protocol SpanTransport {
+protocol SpanTransport: Sendable {
     func sendText(_ text: String, from identity: LocalSpanIdentity, to device: SpanDevice) async throws
 }
 
-final class NetworkSpanTransport: SpanTransport {
+final class NetworkSpanTransport: SpanTransport, @unchecked Sendable {
     func sendText(_ text: String, from identity: LocalSpanIdentity, to device: SpanDevice) async throws {
         guard text.utf8.count <= SpanProtocolV1.maxTextBytes else {
             throw SpanTransportError.textTooLarge
@@ -37,30 +37,20 @@ final class NetworkSpanTransport: SpanTransport {
                 port: NWEndpoint.Port(rawValue: port)!,
                 using: .tcp
             )
-            let stateLock = NSLock()
-            var resumed = false
-
-            func resume(_ result: Result<Void, Error>) {
-                stateLock.lock()
-                defer { stateLock.unlock() }
-                guard !resumed else { return }
-                resumed = true
-                connection.cancel()
-                continuation.resume(with: result)
-            }
+            let completion = SpanSendCompletion(connection: connection, continuation: continuation)
 
             connection.stateUpdateHandler = { state in
                 switch state {
                 case .ready:
                     connection.send(content: data, completion: .contentProcessed { error in
                         if let error {
-                            resume(.failure(error))
+                            completion.resume(.failure(error))
                         } else {
-                            resume(.success(()))
+                            completion.resume(.success(()))
                         }
                     })
                 case .failed(let error):
-                    resume(.failure(error))
+                    completion.resume(.failure(error))
                 case .cancelled:
                     break
                 default:
@@ -69,6 +59,27 @@ final class NetworkSpanTransport: SpanTransport {
             }
             connection.start(queue: .global(qos: .userInitiated))
         }
+    }
+}
+
+private final class SpanSendCompletion: @unchecked Sendable {
+    private let connection: NWConnection
+    private let continuation: CheckedContinuation<Void, Error>
+    private let lock = NSLock()
+    private var didResume = false
+
+    init(connection: NWConnection, continuation: CheckedContinuation<Void, Error>) {
+        self.connection = connection
+        self.continuation = continuation
+    }
+
+    func resume(_ result: Result<Void, Error>) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !didResume else { return }
+        didResume = true
+        connection.cancel()
+        continuation.resume(with: result)
     }
 }
 

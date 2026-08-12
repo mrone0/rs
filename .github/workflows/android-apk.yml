@@ -41,4 +41,4 @@ jobs:
           name: span-android-apks
           path: |
             apps/android/app/build/outputs/apk/debug/app-debug.apk
-            apps/android/app/build/outputs/apk/release/app-release-unsigned.apk
+            apps/android/app/build/outputs/apk/release/app-release.apk

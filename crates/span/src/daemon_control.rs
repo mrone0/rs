@@ -5,6 +5,12 @@ use std::process::{Command, Stdio};
 use crate::config::{daemon_log_path, daemon_pid_path};
 
 pub fn start_daemon() -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if launch_agent_loaded() {
+        println!("span daemon already running (launch agent)");
+        return Ok(());
+    }
+
     let pid_path = daemon_pid_path()?;
     if let Some(pid) = read_pid(&pid_path)? {
         if process_running(pid) {
@@ -45,6 +51,14 @@ pub fn start_daemon() -> io::Result<()> {
 }
 
 pub fn stop_daemon() -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    if stop_launch_agent()? {
+        let pid_path = daemon_pid_path()?;
+        let _ = fs::remove_file(pid_path);
+        println!("stopped span daemon (launch agent)");
+        return Ok(());
+    }
+
     let pid_path = daemon_pid_path()?;
     let Some(pid) = read_pid(&pid_path)? else {
         println!("span daemon is not running");
@@ -61,6 +75,39 @@ pub fn stop_daemon() -> io::Result<()> {
     let _ = fs::remove_file(&pid_path);
     println!("stopped span daemon (pid {pid})");
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_service() -> String {
+    format!("gui/{}/com.span.daemon", unsafe { libc::getuid() })
+}
+
+#[cfg(target_os = "macos")]
+fn launch_agent_loaded() -> bool {
+    std::process::Command::new("launchctl")
+        .args(["print", &launch_agent_service()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+#[cfg(target_os = "macos")]
+fn stop_launch_agent() -> io::Result<bool> {
+    if !launch_agent_loaded() {
+        return Ok(false);
+    }
+
+    let status = std::process::Command::new("launchctl")
+        .args(["bootout", &launch_agent_service()])
+        .status()?;
+    if !status.success() && launch_agent_loaded() {
+        return Err(io::Error::other(format!(
+            "launchctl bootout failed with {status}"
+        )));
+    }
+    Ok(true)
 }
 
 fn read_pid(path: &std::path::Path) -> io::Result<Option<u32>> {

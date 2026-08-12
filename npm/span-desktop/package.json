@@ -1,0 +1,37 @@
+{
+  "name": "span-desktop",
+  "version": "0.1.2-test.0",
+  "description": "Span cross-device clipboard daemon for macOS, Windows and Linux",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mrone0/rs.git"
+  },
+  "homepage": "https://github.com/mrone0/rs",
+  "bugs": {
+    "url": "https://github.com/mrone0/rs/issues"
+  },
+  "keywords": [
+    "span",
+    "clipboard",
+    "cross-device",
+    "macos",
+    "windows",
+    "linux"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "span": "bin/span.js"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "files": [
+    "bin/span.js",
+    "scripts/install.js",
+    "README.md"
+  ],
+  "preferGlobal": true
+}

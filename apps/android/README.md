@@ -37,10 +37,10 @@ APK：
 
 ```text
 apps/android/app/build/outputs/apk/debug/app-debug.apk
-apps/android/app/build/outputs/apk/release/app-release-unsigned.apk
+apps/android/app/build/outputs/apk/release/app-release.apk
 ```
 
-本机实测体积：debug 约 80K，R8 + 资源压缩后的 release unsigned 约 28K。release 还没有配置发布签名，真机临时安装优先使用 debug APK。
+本机实测体积：debug 约 80K，R8 + 资源压缩后的 release debug-signed 约 29K，可直接侧载安装。注意它使用 Android debug key 自动签名，仅用于测试/开源预览，不适合 Play Store 或正式分发。
 
 `local.properties` 只用于本机 Android SDK 路径，已加入根目录 `.gitignore`。
 
@@ -79,4 +79,4 @@ Android 端在 Devices 列表中点击 PC 的 **Trust**。手动配对时需要�
 1. 安装 JDK 21 和 Android 36 SDK；
 2. 运行 JVM 单元测试；
 3. 构建 debug 和 release APK；
-4. 上传 `span-android-debug-apk` artifact，其中同时包含 debug APK 和 release unsigned APK。
+4. 上传 `span-android-debug-apk` artifact，其中同时包含 debug APK 和 release debug-signed APK。

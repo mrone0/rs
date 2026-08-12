@@ -51,8 +51,18 @@ final class SpanDiscovery {
 
     void announceOnce() {
         new Thread(() -> {
-            sendProbe();
-            sendAnnouncement();
+            DatagramSocket current = socket;
+            if (current != null && !current.isClosed()) {
+                sendProbe(current);
+                sendAnnouncement(current);
+                return;
+            }
+            try (DatagramSocket out = new DatagramSocket()) {
+                out.setBroadcast(true);
+                sendProbe(out);
+                sendAnnouncement(out);
+            } catch (Exception ignored) {
+            }
         }, "span-announce").start();
     }
 
@@ -69,8 +79,8 @@ final class SpanDiscovery {
             while (running) {
                 long now = System.currentTimeMillis();
                 if (now >= nextAnnounce) {
-                    sendProbe();
-                    sendAnnouncement();
+                    sendProbe(socket);
+                    sendAnnouncement(socket);
                     nextAnnounce = now + 15000;
                 }
                 try {
@@ -101,18 +111,16 @@ final class SpanDiscovery {
         }
     }
 
-    private void sendProbe() {
-        try (DatagramSocket out = new DatagramSocket()) {
-            out.setBroadcast(true);
+    private void sendProbe(DatagramSocket out) {
+        try {
             byte[] data = SpanProtocol.DISCOVERY_PROBE_MAGIC.getBytes(StandardCharsets.UTF_8);
             sendToBroadcasts(out, data);
         } catch (Exception ignored) {
         }
     }
 
-    private void sendAnnouncement() {
-        try (DatagramSocket out = new DatagramSocket()) {
-            out.setBroadcast(true);
+    private void sendAnnouncement(DatagramSocket out) {
+        try {
             sendToBroadcasts(out, announcementBytes());
         } catch (Exception ignored) {
         }

@@ -131,15 +131,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
+          name: desktop-${{ matrix.name }}
           path: dist/${{ matrix.archive }}
-
-      - name: Upload release asset
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/${{ matrix.archive }}
-
 
   android-apk:
     name: Build android-apk
@@ -179,17 +172,55 @@ jobs:
             dist/span-android-debug.apk
             dist/span-android-release-debug-signed.apk
 
-      - name: Upload release asset
-        if: startsWith(github.ref, 'refs/tags/v')
+  create-release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: 'desktop-*'
+          merge-multiple: true
+
+      - name: List release assets
+        run: find dist -maxdepth 2 -type f -print | sort
+
+      - name: Create release and upload assets
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/span-android-debug.apk
-            dist/span-android-release-debug-signed.apk
+          files: dist/*
+          fail_on_unmatched_files: true
+
+  attach-android-release-assets:
+    name: Attach Android APKs to Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [android-apk, create-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Android artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: dist
+
+      - name: Attach Android APKs
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: dist/*.apk
+          fail_on_unmatched_files: true
+
   publish-npm:
     name: Publish npm desktop installer
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: create-release
     runs-on: ubuntu-latest
     permissions:
       contents: read

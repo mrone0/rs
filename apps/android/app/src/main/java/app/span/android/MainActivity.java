@@ -59,6 +59,20 @@ public final class MainActivity extends Activity {
         worker.execute(this::sendCurrentClipboardAfterWake);
     }
 
+    @Override protected void onResume() {
+        super.onResume();
+        if (isFinishing() || worker.isShutdown()) return;
+        worker.execute(() -> {
+            try {
+                Thread.sleep(200);
+            } catch (InterruptedException ignored) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            sendCurrentClipboardAfterWake();
+        });
+    }
+
     @Override protected void onDestroy() {
         discovery.destroy();
         worker.shutdownNow();

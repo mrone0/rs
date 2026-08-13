@@ -115,9 +115,12 @@ fn run_daemon() -> io::Result<()> {
 
     let mut clipboard = system_clipboard();
     let mut last_change_count = clipboard.change_count().unwrap_or(None);
+    let mut last_seen_text = clipboard.read_text().ok().flatten();
+    let mut next_forced_clipboard_check = std::time::Instant::now() + Duration::from_secs(2);
     let mut next_announce = std::time::Instant::now();
 
     loop {
+        let now = std::time::Instant::now();
         if std::time::Instant::now() >= next_announce {
             let _ = broadcast_once(&local);
             next_announce = std::time::Instant::now() + Duration::from_secs(15);
@@ -131,29 +134,38 @@ fn run_daemon() -> io::Result<()> {
             }
         };
 
+        let forced_clipboard_check = now >= next_forced_clipboard_check;
+        if forced_clipboard_check {
+            next_forced_clipboard_check = now + Duration::from_secs(2);
+        }
+
         match clipboard.change_count() {
             Ok(Some(change_count)) if last_change_count == Some(change_count) => {
-                if !change_was_reported {
+                if !change_was_reported && !forced_clipboard_check {
                     continue;
                 }
             }
             Ok(Some(change_count)) => {
                 last_change_count = Some(change_count);
             }
-            Ok(None) if !change_was_reported => continue,
+            Ok(None) if !change_was_reported && !forced_clipboard_check => continue,
             Ok(None) => {}
             Err(error) => eprintln!("clipboard change count error: {error}"),
         }
 
         match clipboard.read_text() {
             Ok(Some(text)) => {
+                if last_seen_text.as_deref() == Some(text.as_str()) {
+                    continue;
+                }
+                last_seen_text = Some(text.clone());
                 if should_suppress(&suppressed_text, &text) {
                     thread::sleep(Duration::from_millis(350));
                     continue;
                 }
                 broadcast_clipboard_text(&store_path, &local, text)?;
             }
-            Ok(_) => {}
+            Ok(_) => last_seen_text = None,
             Err(error) => eprintln!("clipboard read error: {error}"),
         }
     }

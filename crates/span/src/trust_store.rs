@@ -222,9 +222,9 @@ fn find_existing_device_index(devices: &[DeviceInfo], discovered: &DeviceInfo) -
             })
         })
         .or_else(|| {
-            devices.iter().position(|device| {
-                same_advertised_device(device, discovered)
-            })
+            devices
+                .iter()
+                .position(|device| same_advertised_device(device, discovered))
         })
 }
 
@@ -255,9 +255,9 @@ fn find_merge_target(devices: &[DeviceInfo], incoming: &DeviceInfo) -> Option<us
             })
         })
         .or_else(|| {
-            devices.iter().position(|device| {
-                same_advertised_device(device, incoming)
-            })
+            devices
+                .iter()
+                .position(|device| same_advertised_device(device, incoming))
         })
 }
 

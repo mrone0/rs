@@ -12,6 +12,7 @@ import android.content.Intent;
 import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.IBinder;
+import android.util.Log;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -23,6 +24,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class SpanReceiveService extends Service {
+    private static final String TAG = "SpanReceiveService";
     static final String ACTION_START = "app.span.android.action.START_RECEIVER";
     static final String ACTION_STOP = "app.span.android.action.STOP_RECEIVER";
     private static final String CHANNEL_ID = "span-transfer";
@@ -39,8 +41,6 @@ public final class SpanReceiveService extends Service {
     private SpanDiscovery discovery;
     private ClipboardManager clipboard;
     private ClipboardManager.OnPrimaryClipChangedListener clipboardListener;
-    private volatile String suppressedRemoteText;
-    private volatile long suppressedRemoteTextUntilMillis;
 
     static void start(Context context) {
         Intent intent = new Intent(context, SpanReceiveService.class).setAction(ACTION_START);
@@ -61,6 +61,7 @@ public final class SpanReceiveService extends Service {
         try {
             identity = store.loadOrCreateIdentity();
         } catch (Exception e) {
+            Log.e(TAG, "Identity initialization failed", e);
             stopSelf();
         }
         if (identity != null) {
@@ -126,12 +127,14 @@ public final class SpanReceiveService extends Service {
                         client.setSoTimeout(5000);
                         String line = readLineBounded(client.getInputStream());
                         if (line != null) receiveLine(line);
-                    } catch (Exception ignored) {
+                    } catch (Exception error) {
                         if (!running) break;
+                        Log.e(TAG, "Client receive failed", error);
                     }
                 }
-            } catch (Exception ignored) {
+            } catch (Exception error) {
                 if (running) {
+                    Log.e(TAG, "Listen failed; retrying", error);
                     try { Thread.sleep(1000); } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         break;
@@ -148,10 +151,16 @@ public final class SpanReceiveService extends Service {
 
     private void receiveLine(String line) {
         SpanTextPacket packet = SpanTextPacket.parse(line);
-        if (packet == null || identity == null || store == null) return;
+        if (packet == null || identity == null || store == null) {
+            Log.w(TAG, "Malformed packet rejected");
+            return;
+        }
 
         SpanDevice sender = store.trustedDevice(packet.fromDeviceId);
-        if (sender == null || sender.publicKeyHex == null || sender.publicKeyHex.trim().isEmpty()) return;
+        if (sender == null || sender.publicKeyHex == null || sender.publicKeyHex.trim().isEmpty()) {
+            Log.w(TAG, "Packet rejected from untrusted sender");
+            return;
+        }
 
         try {
             String text = SpanCrypto.decryptText(packet, identity.privateKeyHex, sender.publicKeyHex);
@@ -159,12 +168,11 @@ public final class SpanReceiveService extends Service {
             if (utf8.length > SpanProtocol.MAX_TEXT_BYTES) return;
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard == null) return;
-            suppressedRemoteText = text;
-            suppressedRemoteTextUntilMillis = System.currentTimeMillis() + 3000;
+            SpanClipboardSync.markRemoteClipboard(text);
             clipboard.setPrimaryClip(ClipData.newPlainText("Span", text));
             notifyReceived(sender.name, text);
-        } catch (Exception ignored) {
-            // Invalid authentication, malformed data, or a revoked key is discarded.
+        } catch (Exception error) {
+            Log.e(TAG, "Decrypt or clipboard update failed", error);
         }
     }
 
@@ -190,40 +198,17 @@ public final class SpanReceiveService extends Service {
     private void onLocalClipboardChanged() {
         sender.execute(() -> {
             try {
-                String text = readClipboardText();
-                if (text == null || text.trim().isEmpty()) return;
-                if (shouldSuppressRemoteEcho(text)) return;
-                new SpanDispatcher(this).sendText(text);
-            } catch (Exception ignored) {
-                // Android 10+ may deny clipboard reads while the app is not in the
-                // foreground. The Quick Settings tile remains the explicit fallback.
+                int sent = SpanClipboardSync.sendCurrentClipboard(this);
+                Log.d(TAG, "Clipboard change sent to " + sent + " trusted device(s)");
+            } catch (SecurityException error) {
+                // Android 10+ commonly reports the change to a background app but
+                // denies reading its value. MainActivity retries after it gains
+                // window focus, which is the earliest reliable access point.
+                Log.w(TAG, "Background clipboard read denied; waiting for foreground wake", error);
+            } catch (Exception error) {
+                Log.e(TAG, "Clipboard send failed", error);
             }
         });
-    }
-
-    private boolean shouldSuppressRemoteEcho(String text) {
-        String suppressed = suppressedRemoteText;
-        if (suppressed == null) return false;
-        if (System.currentTimeMillis() > suppressedRemoteTextUntilMillis) {
-            suppressedRemoteText = null;
-            suppressedRemoteTextUntilMillis = 0;
-            return false;
-        }
-        if (!suppressed.equals(text)) return false;
-        suppressedRemoteText = null;
-        suppressedRemoteTextUntilMillis = 0;
-        return true;
-    }
-
-    private String readClipboardText() {
-        if (clipboard == null || !clipboard.hasPrimaryClip()) return null;
-        ClipData clip = clipboard.getPrimaryClip();
-        if (clip == null || clip.getItemCount() == 0) return null;
-        CharSequence text = clip.getItemAt(0).coerceToText(this);
-        if (text == null) return null;
-        String value = text.toString();
-        if (value.getBytes(StandardCharsets.UTF_8).length > SpanProtocol.MAX_TEXT_BYTES) return null;
-        return value;
     }
 
     private String readLineBounded(InputStream input) throws Exception {

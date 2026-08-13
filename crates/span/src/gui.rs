@@ -67,6 +67,7 @@ mod macos {
     }
 
     static STATUS_LABEL: OnceLock<usize> = OnceLock::new();
+    static TRUSTED_SUMMARY_LABEL: OnceLock<usize> = OnceLock::new();
     static TRUSTED_POPUP: OnceLock<usize> = OnceLock::new();
     static CONTROLLER_CLASS: OnceLock<usize> = OnceLock::new();
     static ACTION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -212,7 +213,7 @@ mod macos {
         if trusted_count == 0 {
             rows.push_str("None yet — click Discover to pair a device.");
         }
-        add_label(
+        let trusted_summary = add_label(
             content,
             &rows,
             Rect {
@@ -225,6 +226,7 @@ mod macos {
             13.0,
             false,
         )?;
+        let _ = TRUSTED_SUMMARY_LABEL.set(trusted_summary as usize);
 
         let status = add_label(
             content,
@@ -436,12 +438,16 @@ mod macos {
                 return Ok("Pairing cancelled. No clipboard data was shared.".into());
             }
             let mut store = TrustStore::load(trust_store_path()?)?;
+            let mut accepted = 0;
             for device in &available {
-                store.trust_existing(&device.id)?;
+                if store.trust_existing(&device.id)? {
+                    accepted += 1;
+                }
             }
+            refresh_trusted_controls(&store)?;
             Ok(format!(
                 "Accepted {} device(s). Copy/paste sync is active.",
-                available.len()
+                accepted
             ))
         });
     }
@@ -464,23 +470,50 @@ mod macos {
             }
             let mut store = TrustStore::load(path)?;
             store.revoke(&id)?;
-            send_void(popup as Id, sel("removeAllItems")?);
-            for device in store.trusted_devices() {
+            refresh_trusted_controls(&store)?;
+            Ok(format!("Removed {name}."))
+        });
+    }
+
+    unsafe fn refresh_trusted_controls(store: &TrustStore) -> io::Result<()> {
+        let trusted = store.trusted_devices();
+
+        if let Some(pointer) = TRUSTED_SUMMARY_LABEL.get() {
+            let mut rows = format!("Trusted devices ({})\n", trusted.len());
+            for device in &trusted {
+                rows.push_str(&format!(
+                    "• {} · {}\n",
+                    device.name,
+                    platform_name(device.platform)
+                ));
+            }
+            if trusted.is_empty() {
+                rows.push_str("None yet — click Discover to pair a device.");
+            }
+            send_void_id(*pointer as Id, sel("setStringValue:")?, ns_string(&rows));
+        }
+
+        if let Some(pointer) = TRUSTED_POPUP.get() {
+            let popup = *pointer as Id;
+            send_void(popup, sel("removeAllItems")?);
+            for device in &trusted {
                 send_void_id(
-                    popup as Id,
+                    popup,
                     sel("addItemWithTitle:")?,
                     ns_string(&format!("Remove {}", device.name)),
                 );
             }
-            if store.trusted_devices().is_empty() {
+            if trusted.is_empty() {
                 send_void_id(
-                    popup as Id,
+                    popup,
                     sel("addItemWithTitle:")?,
                     ns_string("No trusted devices"),
                 );
             }
-            Ok(format!("Removed {name}."))
-        });
+            send_void_integer(popup, sel("selectItemAtIndex:")?, 0);
+        }
+
+        Ok(())
     }
 
     unsafe extern "C" fn application_should_terminate_after_last_window_closed(

@@ -47,7 +47,16 @@ public final class MainActivity extends Activity {
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        setIntent(intent);
         handleLaunchIntent(intent);
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus || isFinishing() || worker.isShutdown()) return;
+        // onResume can run before Android grants clipboard access. Window focus is
+        // the reliable point for a normal Android app to read and auto-send it.
+        worker.execute(this::sendCurrentClipboardAfterWake);
     }
 
     @Override protected void onDestroy() {
@@ -110,7 +119,7 @@ public final class MainActivity extends Activity {
     private void sendText(String text, boolean finishAfter) {
         worker.execute(() -> {
             try {
-                int sent = new SpanDispatcher(this).sendText(text);
+                int sent = SpanClipboardSync.sendSharedText(this, text);
                 runOnUiThread(() -> {
                     setStatus(sent == 0 ? "No trusted devices" : "Sent to " + sent + " device(s)");
                     if (finishAfter) Toast.makeText(this, sent == 0 ? "No trusted devices" : "Sent with Span", Toast.LENGTH_SHORT).show();
@@ -123,6 +132,20 @@ public final class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+
+    private void sendCurrentClipboardAfterWake() {
+        try {
+            int sent = SpanClipboardSync.sendCurrentClipboard(this);
+            if (sent > 0) {
+                runOnUiThread(() -> setStatus("Clipboard sent to " + sent + " device(s)"));
+            }
+        } catch (SecurityException error) {
+            runOnUiThread(() -> setStatus("Android blocked clipboard access"));
+        } catch (Exception error) {
+            runOnUiThread(() -> setStatus("Clipboard send failed: " + error.getClass().getSimpleName()));
+        }
     }
 
     private void refreshDevices() {

@@ -9,6 +9,8 @@ import java.nio.charset.StandardCharsets;
 /** Coordinates local clipboard sends across the activity and foreground service. */
 final class SpanClipboardSync {
     private static final String TAG = "SpanClipboardSync";
+    private static final String PREFS = "span";
+    private static final String PENDING_REMOTE_TEXT = "clipboard.pending_remote_text";
     private static final Object LOCK = new Object();
     private static final long DUPLICATE_WINDOW_MILLIS = 1500;
     private static final long REMOTE_ECHO_WINDOW_MILLIS = 5000;
@@ -30,18 +32,28 @@ final class SpanClipboardSync {
         return sendText(context, text, true);
     }
 
-    static void markRemoteClipboard(String text) {
+    static void markRemoteClipboard(Context context, String text) {
         synchronized (LOCK) {
             remoteText = text;
             pendingRemoteText = text;
             remoteTextUntilMillis = System.currentTimeMillis() + REMOTE_ECHO_WINDOW_MILLIS;
         }
+        context.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .putString(PENDING_REMOTE_TEXT, text)
+                .apply();
     }
 
     static boolean writePendingRemoteClipboard(Context context) {
         String text;
         synchronized (LOCK) {
             text = pendingRemoteText;
+        }
+        if (text == null) {
+            text = context.getApplicationContext()
+                    .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString(PENDING_REMOTE_TEXT, null);
         }
         if (text == null || text.isEmpty()) return false;
 
@@ -53,6 +65,11 @@ final class SpanClipboardSync {
         synchronized (LOCK) {
             if (text.equals(pendingRemoteText)) pendingRemoteText = null;
         }
+        context.getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                .edit()
+                .remove(PENDING_REMOTE_TEXT)
+                .apply();
         return true;
     }
 

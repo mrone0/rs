@@ -102,6 +102,7 @@ fn run_daemon() -> io::Result<()> {
     let store_path = trust_store_path()?;
     let store = TrustStore::load(&store_path)?;
     let suppressed_text = Arc::new(Mutex::new(None::<String>));
+    let latest_pending_text = Arc::new(Mutex::new(None::<String>));
 
     println!("span daemon");
     println!("device : {} ({})", local.name, local.id);
@@ -111,7 +112,11 @@ fn run_daemon() -> io::Result<()> {
     println!("listen : 0.0.0.0:{TEXT_PORT}");
 
     spawn_receiver(local.clone(), suppressed_text.clone());
-    spawn_discovery_listener(store_path.clone(), local.clone());
+    spawn_discovery_listener(
+        store_path.clone(),
+        local.clone(),
+        latest_pending_text.clone(),
+    );
 
     let mut clipboard = system_clipboard();
     let mut last_change_count = clipboard.change_count().unwrap_or(None);
@@ -163,7 +168,7 @@ fn run_daemon() -> io::Result<()> {
                     thread::sleep(Duration::from_millis(350));
                     continue;
                 }
-                broadcast_clipboard_text(&store_path, &local, text)?;
+                broadcast_clipboard_text(&store_path, &local, latest_pending_text.clone(), text)?;
             }
             Ok(_) => last_seen_text = None,
             Err(error) => eprintln!("clipboard read error: {error}"),
@@ -171,7 +176,11 @@ fn run_daemon() -> io::Result<()> {
     }
 }
 
-fn spawn_discovery_listener(store_path: std::path::PathBuf, local: LocalDevice) {
+fn spawn_discovery_listener(
+    store_path: std::path::PathBuf,
+    local: LocalDevice,
+    latest_pending_text: Arc<Mutex<Option<String>>>,
+) {
     thread::spawn(move || {
         if let Err(error) = listen_forever(|message, addr| {
             match message {
@@ -213,6 +222,21 @@ fn spawn_discovery_listener(store_path: std::path::PathBuf, local: LocalDevice) 
                     } else if !known_before && changed {
                         println!("discovered device: {} ({})", info.name, info.id);
                         notify_gui_pairing_request(&info);
+                    }
+
+                    if trusted_before {
+                        let pending = latest_pending_text
+                            .lock()
+                            .ok()
+                            .and_then(|text| text.clone());
+                        if let Some(text) = pending {
+                            broadcast_clipboard_text(
+                                &store_path,
+                                &local,
+                                latest_pending_text.clone(),
+                                text,
+                            )?;
+                        }
                     }
                 }
             }
@@ -328,14 +352,20 @@ fn should_suppress(suppressed_text: &Arc<Mutex<Option<String>>>, text: &str) -> 
 fn broadcast_clipboard_text(
     store_path: &std::path::Path,
     local: &LocalDevice,
+    latest_pending_text: Arc<Mutex<Option<String>>>,
     text: String,
 ) -> io::Result<()> {
+    if let Ok(mut pending) = latest_pending_text.lock() {
+        *pending = Some(text.clone());
+    }
+
     let store = TrustStore::load(store_path)?;
     let targets = store
         .trusted_devices()
         .into_iter()
         .cloned()
         .collect::<Vec<_>>();
+    let mut failed = false;
 
     for device in targets {
         let Some(endpoint) = device.endpoint.as_deref() else {
@@ -354,7 +384,17 @@ fn broadcast_clipboard_text(
                 eprintln!("send to {} at {endpoint} failed: {error}", device.name);
                 if retry_send_after_discovery(store_path, local, &device, &packet)? {
                     println!("sent text to {} after discovery refresh", device.name);
+                } else {
+                    failed = true;
                 }
+            }
+        }
+    }
+
+    if !failed {
+        if let Ok(mut pending) = latest_pending_text.lock() {
+            if pending.as_deref() == Some(text.as_str()) {
+                *pending = None;
             }
         }
     }
@@ -687,7 +727,12 @@ fn send_command(args: Vec<String>) -> io::Result<()> {
         return Ok(());
     }
 
-    broadcast_clipboard_text(&store_path, &local, text)?;
+    broadcast_clipboard_text(
+        &store_path,
+        &local,
+        Arc::new(Mutex::new(None::<String>)),
+        text,
+    )?;
     println!("Sent to {targets} trusted device(s).");
     Ok(())
 }

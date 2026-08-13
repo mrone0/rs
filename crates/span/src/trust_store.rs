@@ -61,10 +61,18 @@ impl TrustStore {
     }
 
     pub fn trust_existing(&mut self, id: &DeviceId) -> io::Result<bool> {
-        let Some(device) = self.devices.iter_mut().find(|device| &device.id == id) else {
+        let Some(index) = self.devices.iter().position(|device| &device.id == id) else {
             return Ok(false);
         };
-        device.trust_state = TrustState::Trusted;
+        let trusted_name = self.devices[index].name.clone();
+        let trusted_platform = self.devices[index].platform;
+        self.devices[index].trust_state = TrustState::Trusted;
+        demote_same_advertised_trusted_devices(
+            &mut self.devices,
+            id,
+            &trusted_name,
+            trusted_platform,
+        );
         normalize_devices(&mut self.devices);
         self.save()?;
         Ok(true)
@@ -78,6 +86,9 @@ impl TrustStore {
         endpoint: Option<String>,
         public_key: Option<String>,
     ) -> io::Result<()> {
+        let trusted_id = id.clone();
+        let trusted_name = name.clone();
+        let trusted_platform = platform;
         if let Some(device) = self.devices.iter_mut().find(|device| device.id == id) {
             device.name = name;
             device.platform = platform;
@@ -98,6 +109,12 @@ impl TrustStore {
                 public_key,
             });
         }
+        demote_same_advertised_trusted_devices(
+            &mut self.devices,
+            &trusted_id,
+            &trusted_name,
+            trusted_platform,
+        );
         normalize_devices(&mut self.devices);
         self.save()
     }
@@ -251,6 +268,23 @@ fn normalize_devices(devices: &mut Vec<DeviceInfo>) {
         }
     }
     *devices = normalized;
+}
+
+fn demote_same_advertised_trusted_devices(
+    devices: &mut [DeviceInfo],
+    trusted_id: &DeviceId,
+    trusted_name: &str,
+    trusted_platform: Platform,
+) {
+    for device in devices {
+        if &device.id != trusted_id
+            && device.trust_state == TrustState::Trusted
+            && device.name == trusted_name
+            && device.platform == trusted_platform
+        {
+            device.trust_state = TrustState::Discovered;
+        }
+    }
 }
 
 fn find_merge_target(devices: &[DeviceInfo], incoming: &DeviceInfo) -> Option<usize> {
@@ -603,6 +637,48 @@ mod tests {
                 .iter()
                 .any(|device| device.id.as_str() == "new-phone"
                     && device.trust_state == TrustState::Discovered)
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn trusting_same_name_new_key_demotes_old_trusted_device() {
+        let path = temp_file("same-name-trust-switch.tsv");
+        let _ = fs::remove_file(&path);
+
+        let mut store = TrustStore::load(&path).unwrap();
+        store
+            .trust(
+                DeviceId::new("old-phone").unwrap(),
+                "Phone".to_string(),
+                Platform::Android,
+                Some("192.168.1.10".to_string()),
+                Some("aa".repeat(32)),
+            )
+            .unwrap();
+        store
+            .record_discovered(DeviceInfo {
+                id: DeviceId::new("new-phone").unwrap(),
+                name: "Phone".to_string(),
+                platform: Platform::Android,
+                trust_state: TrustState::Discovered,
+                endpoint: Some("192.168.1.11".to_string()),
+                public_key: Some("bb".repeat(32)),
+            })
+            .unwrap();
+        store
+            .trust_existing(&DeviceId::new("new-phone").unwrap())
+            .unwrap();
+
+        assert_eq!(store.trusted_devices().len(), 1);
+        assert_eq!(store.trusted_devices()[0].id.as_str(), "new-phone");
+        assert_eq!(
+            store
+                .device(&DeviceId::new("old-phone").unwrap())
+                .unwrap()
+                .trust_state,
+            TrustState::Discovered
         );
 
         let _ = fs::remove_file(&path);

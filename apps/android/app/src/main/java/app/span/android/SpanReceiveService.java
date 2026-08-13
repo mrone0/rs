@@ -218,7 +218,7 @@ public final class SpanReceiveService extends Service {
             if (utf8.length > SpanProtocol.MAX_TEXT_BYTES) return;
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             if (clipboard == null) return;
-            SpanClipboardSync.markRemoteClipboard(text);
+            SpanClipboardSync.markRemoteClipboard(this, text);
             clipboard.setPrimaryClip(ClipData.newPlainText("Span", text));
             notifyReceived(sender.name, text);
         } catch (Exception error) {

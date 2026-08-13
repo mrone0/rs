@@ -46,6 +46,16 @@ impl TrustStore {
             .find(|device| &device.id == id && device.trust_state == TrustState::Trusted)
     }
 
+    pub fn trusted_device_mut(&mut self, id: &DeviceId) -> Option<&mut DeviceInfo> {
+        self.devices
+            .iter_mut()
+            .find(|device| &device.id == id && device.trust_state == TrustState::Trusted)
+    }
+
+    pub fn save_now(&self) -> io::Result<()> {
+        self.save()
+    }
+
     pub fn device(&self, id: &DeviceId) -> Option<&DeviceInfo> {
         self.devices.iter().find(|device| &device.id == id)
     }
@@ -113,6 +123,9 @@ impl TrustStore {
             discovered.public_key.as_deref(),
         ) {
             if existing_key != discovered_key {
+                self.devices.push(discovered);
+                normalize_devices(&mut self.devices);
+                self.save()?;
                 return Ok(false);
             }
         }
@@ -262,6 +275,15 @@ fn find_merge_target(devices: &[DeviceInfo], incoming: &DeviceInfo) -> Option<us
 }
 
 fn same_advertised_device(left: &DeviceInfo, right: &DeviceInfo) -> bool {
+    if left
+        .public_key
+        .as_deref()
+        .zip(right.public_key.as_deref())
+        .is_some_and(|(left, right)| left != right)
+    {
+        return false;
+    }
+
     left.name == right.name && left.platform == right.platform
 }
 
@@ -541,6 +563,46 @@ mod tests {
         assert_eq!(
             store.trusted_device(&id).unwrap().endpoint.as_deref(),
             Some("192.168.1.11")
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn discovery_keeps_same_name_new_key_as_new_device() {
+        let path = temp_file("same-name-new-key.tsv");
+        let _ = fs::remove_file(&path);
+
+        let mut store = TrustStore::load(&path).unwrap();
+        store
+            .trust(
+                DeviceId::new("old-phone").unwrap(),
+                "Phone".to_string(),
+                Platform::Android,
+                Some("192.168.1.10".to_string()),
+                Some("aa".repeat(32)),
+            )
+            .unwrap();
+
+        store
+            .record_discovered(DeviceInfo {
+                id: DeviceId::new("new-phone").unwrap(),
+                name: "Phone".to_string(),
+                platform: Platform::Android,
+                trust_state: TrustState::Discovered,
+                endpoint: Some("192.168.1.11".to_string()),
+                public_key: Some("bb".repeat(32)),
+            })
+            .unwrap();
+
+        assert_eq!(store.devices().len(), 2);
+        assert_eq!(store.trusted_devices().len(), 1);
+        assert!(
+            store
+                .devices()
+                .iter()
+                .any(|device| device.id.as_str() == "new-phone"
+                    && device.trust_state == TrustState::Discovered)
         );
 
         let _ = fs::remove_file(&path);

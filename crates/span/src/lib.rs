@@ -331,8 +331,13 @@ fn broadcast_clipboard_text(
     text: String,
 ) -> io::Result<()> {
     let store = TrustStore::load(store_path)?;
+    let targets = store
+        .trusted_devices()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
 
-    for device in store.trusted_devices() {
+    for device in targets {
         let Some(endpoint) = device.endpoint.as_deref() else {
             continue;
         };
@@ -345,11 +350,50 @@ fn broadcast_clipboard_text(
 
         match send_text((endpoint, TEXT_PORT), &packet) {
             Ok(()) => println!("sent text to {}", device.name),
-            Err(error) => eprintln!("send to {} failed: {error}", device.name),
+            Err(error) => {
+                eprintln!("send to {} at {endpoint} failed: {error}", device.name);
+                if retry_send_after_discovery(store_path, local, &device, &packet)? {
+                    println!("sent text to {} after discovery refresh", device.name);
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+fn retry_send_after_discovery(
+    store_path: &std::path::Path,
+    local: &LocalDevice,
+    device: &span_core::DeviceInfo,
+    packet: &crate::transport::EncryptedTextPacket,
+) -> io::Result<bool> {
+    let Some(public_key) = device.public_key.as_deref() else {
+        return Ok(false);
+    };
+
+    for (discovered, addr) in discover_once(local, Duration::from_secs(2))? {
+        if discovered.id != device.id && discovered.public_key != public_key {
+            continue;
+        }
+
+        let endpoint = addr.ip().to_string();
+        let mut store = TrustStore::load(store_path)?;
+        if let Some(trusted) = store.trusted_device_mut(&device.id) {
+            trusted.endpoint = Some(endpoint.clone());
+            store.save_now()?;
+        }
+
+        match send_text((endpoint.as_str(), TEXT_PORT), packet) {
+            Ok(()) => return Ok(true),
+            Err(error) => eprintln!(
+                "retry send to {} at {endpoint} failed: {error}",
+                device.name
+            ),
+        }
+    }
+
+    Ok(false)
 }
 
 fn print_status() -> io::Result<()> {

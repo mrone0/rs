@@ -100,6 +100,7 @@ final class SpanStore {
                 boolean keyMatches = existing.publicKeyHex == null
                         || discovered.publicKeyHex == null
                         || existing.publicKeyHex.equalsIgnoreCase(discovered.publicKeyHex);
+                if (!keyMatches) continue;
                 existing.name = discovered.name;
                 existing.platform = discovered.platform;
                 // A trusted device key is pinned. An unauthenticated discovery
@@ -151,6 +152,7 @@ final class SpanStore {
         if (left.id != null && left.id.equals(right.id)) return true;
         if (left.publicKeyHex != null && right.publicKeyHex != null
                 && left.publicKeyHex.equalsIgnoreCase(right.publicKeyHex)) return true;
+        if (left.publicKeyHex != null && right.publicKeyHex != null) return false;
         return left.name != null && left.name.equals(right.name)
                 && left.platform != null && left.platform.equals(right.platform);
     }

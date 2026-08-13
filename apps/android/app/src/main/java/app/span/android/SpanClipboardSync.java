@@ -41,6 +41,7 @@ final class SpanClipboardSync {
         if (text.getBytes(StandardCharsets.UTF_8).length > SpanProtocol.MAX_TEXT_BYTES) {
             throw new IllegalArgumentException("text too large");
         }
+        SpanReceiveService.start(context);
 
         long now = System.currentTimeMillis();
         synchronized (LOCK) {

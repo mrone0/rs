@@ -72,6 +72,7 @@ final class SpanStore {
     }
 
     void saveDevices(List<SpanDevice> devices) {
+        devices = compactDevices(devices);
         JSONArray array = new JSONArray();
         try {
             for (SpanDevice d : devices) {
@@ -94,7 +95,7 @@ final class SpanStore {
     void upsertDiscovered(SpanDevice discovered) {
         List<SpanDevice> devices = loadDevices();
         for (SpanDevice existing : devices) {
-            if (existing.id.equals(discovered.id)) {
+            if (sameDevice(existing, discovered)) {
                 boolean trusted = existing.trusted || discovered.trusted;
                 boolean keyMatches = existing.publicKeyHex == null
                         || discovered.publicKeyHex == null
@@ -115,6 +116,43 @@ final class SpanStore {
         }
         devices.add(discovered);
         saveDevices(devices);
+    }
+
+    private List<SpanDevice> compactDevices(List<SpanDevice> devices) {
+        List<SpanDevice> compacted = new ArrayList<>();
+        for (SpanDevice device : devices) {
+            SpanDevice existing = null;
+            for (SpanDevice candidate : compacted) {
+                if (sameDevice(candidate, device)) {
+                    existing = candidate;
+                    break;
+                }
+            }
+            if (existing == null) {
+                compacted.add(device);
+                continue;
+            }
+            boolean keyConflict = existing.publicKeyHex != null
+                    && device.publicKeyHex != null
+                    && !existing.publicKeyHex.equalsIgnoreCase(device.publicKeyHex);
+            if (keyConflict && existing.trusted) continue;
+            existing.trusted = existing.trusted || device.trusted;
+            existing.id = device.id;
+            existing.name = device.name;
+            existing.platform = device.platform;
+            existing.host = device.host == null ? existing.host : device.host;
+            if (!existing.trusted || existing.publicKeyHex == null) existing.publicKeyHex = device.publicKeyHex;
+            existing.lastSeenMillis = Math.max(existing.lastSeenMillis, device.lastSeenMillis);
+        }
+        return compacted;
+    }
+
+    private boolean sameDevice(SpanDevice left, SpanDevice right) {
+        if (left.id != null && left.id.equals(right.id)) return true;
+        if (left.publicKeyHex != null && right.publicKeyHex != null
+                && left.publicKeyHex.equalsIgnoreCase(right.publicKeyHex)) return true;
+        return left.name != null && left.name.equals(right.name)
+                && left.platform != null && left.platform.equals(right.platform);
     }
 
     void setTrusted(String id, boolean trusted) {

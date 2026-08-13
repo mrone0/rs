@@ -4,9 +4,6 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.pm.ShortcutInfo;
-import android.content.pm.ShortcutManager;
-import android.graphics.drawable.Icon;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.widget.Button;
@@ -19,7 +16,6 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
-    static final String ACTION_SEND_CLIPBOARD = "app.span.android.action.SEND_CLIPBOARD";
     private SpanStore store;
     private LocalIdentity identity;
     private SpanDiscovery discovery;
@@ -41,7 +37,6 @@ public final class MainActivity extends Activity {
             refreshDevices();
         });
         buildUi();
-        installQuickSendShortcut();
         store.setReceiverEnabled(true);
         discovery.start();
         SpanReceiveService.start(this);
@@ -88,13 +83,6 @@ public final class MainActivity extends Activity {
         discover.setOnClickListener(v -> { discovery.announceOnce(); setStatus("Discovery requested"); });
         root.addView(discover);
 
-        addSection(root, "This Device");
-        TextView local = new TextView(this);
-        local.setText("id: " + identity.id + "\nplatform: android\nkey: " + shortKey(identity.publicKeyHex));
-        local.setTextIsSelectable(true);
-        local.setTextSize(12);
-        root.addView(local);
-
         addSection(root, "Devices");
         devicesList = new LinearLayout(this);
         devicesList.setOrientation(LinearLayout.VERTICAL);
@@ -111,51 +99,12 @@ public final class MainActivity extends Activity {
         }
     }
 
-    private void installQuickSendShortcut() {
-        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.N_MR1) return;
-        Intent intent = new Intent(this, MainActivity.class)
-                .setAction(ACTION_SEND_CLIPBOARD)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        ShortcutInfo shortcut = new ShortcutInfo.Builder(this, "send-clipboard")
-                .setShortLabel("Send clipboard")
-                .setLongLabel("Wake Span and send clipboard")
-                .setIcon(Icon.createWithResource(this, R.drawable.ic_span))
-                .setIntent(intent)
-                .build();
-        ShortcutManager manager = getSystemService(ShortcutManager.class);
-        if (manager != null) manager.setDynamicShortcuts(java.util.Collections.singletonList(shortcut));
-    }
-
     private void handleLaunchIntent(Intent intent) {
         if (intent == null) return;
-        if (ACTION_SEND_CLIPBOARD.equals(intent.getAction())) {
-            sendClipboard(true);
-            return;
-        }
         if (Intent.ACTION_SEND.equals(intent.getAction()) && "text/plain".equals(intent.getType())) {
             String text = intent.getStringExtra(Intent.EXTRA_TEXT);
             if (text != null && !text.trim().isEmpty()) sendText(text, true);
         }
-    }
-
-    private void sendClipboard() { sendClipboard(false); }
-
-    private void sendClipboard(boolean finishAfter) {
-        worker.execute(() -> {
-            try {
-                int sent = new SpanDispatcher(this).sendClipboard();
-                runOnUiThread(() -> {
-                    setStatus(sent == 0 ? "Clipboard empty or no trusted devices" : "Sent to " + sent + " device(s)");
-                    if (finishAfter) Toast.makeText(this, sent == 0 ? "Nothing sent" : "Sent with Span", Toast.LENGTH_SHORT).show();
-                    if (finishAfter) finish();
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> {
-                    setStatus("Send failed: " + e.getClass().getSimpleName());
-                    if (finishAfter) Toast.makeText(this, "Send failed", Toast.LENGTH_SHORT).show();
-                });
-            }
-        });
     }
 
     private void sendText(String text, boolean finishAfter) {

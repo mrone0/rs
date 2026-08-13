@@ -223,10 +223,7 @@ fn find_existing_device_index(devices: &[DeviceInfo], discovered: &DeviceInfo) -
         })
         .or_else(|| {
             devices.iter().position(|device| {
-                device.public_key.is_none()
-                    && discovered.public_key.is_none()
-                    && device.name == discovered.name
-                    && device.platform == discovered.platform
+                same_advertised_device(device, discovered)
             })
         })
 }
@@ -259,14 +256,26 @@ fn find_merge_target(devices: &[DeviceInfo], incoming: &DeviceInfo) -> Option<us
         })
         .or_else(|| {
             devices.iter().position(|device| {
-                (device.public_key.is_none() || incoming.public_key.is_none())
-                    && device.name == incoming.name
-                    && device.platform == incoming.platform
+                same_advertised_device(device, incoming)
             })
         })
 }
 
+fn same_advertised_device(left: &DeviceInfo, right: &DeviceInfo) -> bool {
+    left.name == right.name && left.platform == right.platform
+}
+
 fn merge_device(existing: &mut DeviceInfo, incoming: DeviceInfo) {
+    let key_conflict = existing
+        .public_key
+        .as_deref()
+        .zip(incoming.public_key.as_deref())
+        .is_some_and(|(left, right)| left != right);
+
+    if key_conflict && existing.trust_state == TrustState::Trusted {
+        return;
+    }
+
     existing.trust_state = stronger_trust_state(existing.trust_state, incoming.trust_state);
     // Same public key means this is the same cryptographic device. Keep the
     // newest advertised id so future encrypted packets pass sender lookup.

@@ -7,7 +7,6 @@ public final class SpanTileService extends TileService {
     @Override public void onClick() {
         super.onClick();
         Intent intent = new Intent(this, MainActivity.class);
-        intent.setAction(MainActivity.ACTION_SEND_CLIPBOARD);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         startActivityAndCollapse(intent);
     }

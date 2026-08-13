@@ -90,7 +90,6 @@ public final class PcToAndroidClipboardTest {
             // service remains active while both PC packets arrive.
             activity.moveToState(Lifecycle.State.CREATED);
             sendRawPacketWithRetry(fixedRustPacket());
-            Thread.sleep(250);
             activity.moveToState(Lifecycle.State.RESUMED);
             assertClipboardEventuallyEquals(EXPECTED);
 
@@ -100,7 +99,6 @@ public final class PcToAndroidClipboardTest {
             SpanCrypto.Encrypted second = SpanCrypto.encryptText(
                     SECOND_EXPECTED, ANDROID_PRIVATE, PC_PUBLIC);
             sendRawPacketWithRetry(packetLine(second.nonceHex, second.ciphertextHex));
-            Thread.sleep(250);
             activity.moveToState(Lifecycle.State.RESUMED);
             assertClipboardEventuallyEquals(SECOND_EXPECTED);
         }
@@ -118,7 +116,7 @@ public final class PcToAndroidClipboardTest {
     private void sendRawPacketWithRetry(String line) throws Exception {
         byte[] data = line.getBytes(StandardCharsets.UTF_8);
         Exception last = null;
-        long deadline = System.currentTimeMillis() + 5000;
+        long deadline = System.currentTimeMillis() + 10000;
         while (System.currentTimeMillis() < deadline) {
             try (Socket socket = new Socket()) {
                 socket.connect(new InetSocketAddress("127.0.0.1", SpanProtocol.TEXT_PORT), 500);

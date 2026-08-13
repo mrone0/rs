@@ -18,6 +18,7 @@ final class SpanClipboardSync {
     private static long lastSentAtMillis;
     private static String remoteText;
     private static long remoteTextUntilMillis;
+    private static String pendingRemoteText;
 
     private SpanClipboardSync() {}
 
@@ -32,8 +33,27 @@ final class SpanClipboardSync {
     static void markRemoteClipboard(String text) {
         synchronized (LOCK) {
             remoteText = text;
+            pendingRemoteText = text;
             remoteTextUntilMillis = System.currentTimeMillis() + REMOTE_ECHO_WINDOW_MILLIS;
         }
+    }
+
+    static boolean writePendingRemoteClipboard(Context context) {
+        String text;
+        synchronized (LOCK) {
+            text = pendingRemoteText;
+        }
+        if (text == null || text.isEmpty()) return false;
+
+        ClipboardManager clipboard =
+                (ClipboardManager) context.getApplicationContext().getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) return false;
+        clipboard.setPrimaryClip(ClipData.newPlainText("Span", text));
+
+        synchronized (LOCK) {
+            if (text.equals(pendingRemoteText)) pendingRemoteText = null;
+        }
+        return true;
     }
 
     private static int sendText(Context context, String text, boolean explicitShare) throws Exception {
@@ -41,8 +61,6 @@ final class SpanClipboardSync {
         if (text.getBytes(StandardCharsets.UTF_8).length > SpanProtocol.MAX_TEXT_BYTES) {
             throw new IllegalArgumentException("text too large");
         }
-        SpanReceiveService.start(context);
-
         long now = System.currentTimeMillis();
         synchronized (LOCK) {
             if (!explicitShare && remoteText != null && remoteText.equals(text)

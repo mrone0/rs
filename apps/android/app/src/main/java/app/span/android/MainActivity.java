@@ -54,6 +54,7 @@ public final class MainActivity extends Activity {
     @Override public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
         if (!hasFocus || isFinishing() || worker.isShutdown()) return;
+        if (SpanClipboardSync.writePendingRemoteClipboard(this)) return;
         // onResume can run before Android grants clipboard access. Window focus is
         // the reliable point for a normal Android app to read and auto-send it.
         worker.execute(this::sendCurrentClipboardAfterWake);
@@ -69,6 +70,7 @@ public final class MainActivity extends Activity {
                 Thread.currentThread().interrupt();
                 return;
             }
+            if (SpanClipboardSync.writePendingRemoteClipboard(this)) return;
             sendCurrentClipboardAfterWake();
         });
     }

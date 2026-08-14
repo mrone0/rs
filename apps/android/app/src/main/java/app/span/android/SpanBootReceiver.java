@@ -6,7 +6,11 @@ import android.content.Intent;
 
 public final class SpanBootReceiver extends BroadcastReceiver {
     @Override public void onReceive(Context context, Intent intent) {
-        if (!Intent.ACTION_BOOT_COMPLETED.equals(intent.getAction())) return;
+        String action = intent == null ? null : intent.getAction();
+        boolean shouldRestore = Intent.ACTION_BOOT_COMPLETED.equals(action)
+                || Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)
+                || "android.intent.action.QUICKBOOT_POWERON".equals(action);
+        if (!shouldRestore) return;
         SpanStore store = new SpanStore(context);
         if (store.isReceiverEnabled()) SpanReceiveService.start(context);
     }

@@ -58,9 +58,16 @@ final class SpanClipboardSync {
         if (text == null || text.isEmpty()) return false;
 
         ClipboardManager clipboard =
-                (ClipboardManager) context.getApplicationContext().getSystemService(Context.CLIPBOARD_SERVICE);
+                (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
         if (clipboard == null) return false;
-        clipboard.setPrimaryClip(ClipData.newPlainText("Span", text));
+        try {
+            clipboard.setPrimaryClip(ClipData.newPlainText("Span", text));
+        } catch (RuntimeException error) {
+            // Keep the persisted pending value. The foreground Activity or the
+            // system-bound watchdog can retry when Android permits the call.
+            Log.w(TAG, "System clipboard write deferred", error);
+            return false;
+        }
 
         synchronized (LOCK) {
             if (text.equals(pendingRemoteText)) pendingRemoteText = null;
@@ -72,6 +79,7 @@ final class SpanClipboardSync {
                 .apply();
         return true;
     }
+
 
     private static int sendText(Context context, String text, boolean explicitShare) throws Exception {
         if (text == null || text.trim().isEmpty()) return 0;

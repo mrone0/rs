@@ -6,8 +6,12 @@ import static org.junit.Assert.assertNotNull;
 import android.Manifest;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ComponentName;
 import android.content.Context;
+import android.content.Intent;
 import android.os.Build;
+import android.os.Bundle;
+import android.os.ResultReceiver;
 import androidx.lifecycle.Lifecycle;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
@@ -17,6 +21,7 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -41,9 +46,13 @@ public final class PcToAndroidClipboardTest {
     private static final String SECOND_EXPECTED = "Second PC clipboard update ✓";
 
     private Context context;
+    private Context testContext;
+    private final AtomicReference<String> probedClipboard = new AtomicReference<>();
 
     @Before public void setUp() {
         context = InstrumentationRegistry.getInstrumentation().getTargetContext();
+        testContext = InstrumentationRegistry.getInstrumentation().getContext();
+        probedClipboard.set(null);
         context.getSharedPreferences("span", Context.MODE_PRIVATE).edit()
                 .clear()
                 .putString("identity.id", "android-test")
@@ -85,12 +94,15 @@ public final class PcToAndroidClipboardTest {
 
         try (ActivityScenario<MainActivity> activity = ActivityScenario.launch(MainActivity.class)) {
             SpanReceiveService.start(context);
+            activity.onActivity(this::writeClipboardBaseline);
 
             // Put Span's UI in the background. Only its real foreground receiver
             // service remains active while both PC packets arrive.
             activity.moveToState(Lifecycle.State.CREATED);
+            launchForegroundClipboardProbe();
+            probedClipboard.set(null);
             sendRawPacketWithRetry(fixedRustPacket());
-            activity.moveToState(Lifecycle.State.RESUMED);
+            // Span stays in the background while another app reads the result.
             assertClipboardEventuallyEquals(EXPECTED);
 
             activity.moveToState(Lifecycle.State.CREATED);
@@ -98,10 +110,17 @@ public final class PcToAndroidClipboardTest {
             // second time, guarding against the observed "first copy only" bug.
             SpanCrypto.Encrypted second = SpanCrypto.encryptText(
                     SECOND_EXPECTED, ANDROID_PRIVATE, PC_PUBLIC);
+            probedClipboard.set(null);
             sendRawPacketWithRetry(packetLine(second.nonceHex, second.ciphertextHex));
-            activity.moveToState(Lifecycle.State.RESUMED);
             assertClipboardEventuallyEquals(SECOND_EXPECTED);
         }
+    }
+
+    private void writeClipboardBaseline(MainActivity activity) {
+        ClipboardManager clipboard =
+                (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+        assertNotNull(clipboard);
+        clipboard.setPrimaryClip(ClipData.newPlainText("test baseline", "span-test-baseline"));
     }
 
     private String fixedRustPacket() {
@@ -133,19 +152,34 @@ public final class PcToAndroidClipboardTest {
         throw new AssertionError("receiver did not start");
     }
 
+    private void launchForegroundClipboardProbe() {
+        Intent intent = new Intent();
+        intent.setComponent(new ComponentName(
+                testContext.getPackageName(), ClipboardProbeActivity.class.getName()));
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+        intent.putExtra(ClipboardProbeActivity.EXTRA_FINISH_ON_VALUE, SECOND_EXPECTED);
+        intent.putExtra(ClipboardProbeActivity.EXTRA_RESULT_RECEIVER, new ResultReceiver(null) {
+            @Override protected void onReceiveResult(int resultCode, Bundle resultData) {
+                if (resultCode == ClipboardProbeActivity.RESULT_CLIPBOARD && resultData != null) {
+                    probedClipboard.set(resultData.getString(ClipboardProbeActivity.EXTRA_VALUE));
+                }
+            }
+        });
+        testContext.startActivity(intent);
+        try {
+            Thread.sleep(500);
+        } catch (InterruptedException error) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted while launching clipboard probe", error);
+        }
+    }
+
     private void assertClipboardEventuallyEquals(String expected) throws Exception {
-        ClipboardManager clipboard =
-                (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
-        assertNotNull(clipboard);
         long deadline = System.currentTimeMillis() + 5000;
         String actual = null;
         while (System.currentTimeMillis() < deadline) {
-            ClipData clip = clipboard.getPrimaryClip();
-            if (clip != null && clip.getItemCount() > 0) {
-                CharSequence value = clip.getItemAt(0).coerceToText(context);
-                actual = value == null ? null : value.toString();
-                if (expected.equals(actual)) return;
-            }
+            actual = probedClipboard.get();
+            if (expected.equals(actual)) return;
             Thread.sleep(100);
         }
         assertEquals(expected, actual);

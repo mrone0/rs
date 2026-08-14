@@ -4,7 +4,10 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.Uri;
 import android.os.Bundle;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.widget.Button;
 import android.widget.LinearLayout;
@@ -22,6 +25,7 @@ public final class MainActivity extends Activity {
     private final ExecutorService worker = Executors.newCachedThreadPool();
     private LinearLayout devicesList;
     private TextView status;
+    private Button reliableBackground;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -62,6 +66,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        updateReliableBackgroundState();
         if (isFinishing() || worker.isShutdown()) return;
         worker.execute(() -> {
             try {
@@ -79,6 +84,40 @@ public final class MainActivity extends Activity {
         discovery.destroy();
         worker.shutdownNow();
         super.onDestroy();
+    }
+
+
+    private void configureReliableBackground() {
+        if (!SpanKeepAliveService.isEnabled(this)) {
+            setStatus("In Accessibility, enable Span reliable background receiver");
+            startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));
+            return;
+        }
+        PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+        if (power != null && !power.isIgnoringBatteryOptimizations(getPackageName())) {
+            Intent request = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                    .setData(Uri.parse("package:" + getPackageName()));
+            startActivity(request);
+            return;
+        }
+        SpanReceiveService.start(this);
+        setStatus("Reliable background receiver enabled");
+        updateReliableBackgroundState();
+    }
+
+    private void updateReliableBackgroundState() {
+        if (reliableBackground == null) return;
+        boolean accessibility = SpanKeepAliveService.isEnabled(this);
+        PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
+        boolean battery = power != null && power.isIgnoringBatteryOptimizations(getPackageName());
+        if (accessibility && battery) {
+            reliableBackground.setVisibility(android.view.View.GONE);
+        } else {
+            reliableBackground.setVisibility(android.view.View.VISIBLE);
+            reliableBackground.setText(accessibility
+                    ? "Allow background battery use"
+                    : "Enable reliable background");
+        }
     }
 
     private void buildUi() {
@@ -103,6 +142,11 @@ public final class MainActivity extends Activity {
         status.setText("Background receiver ready");
         status.setPadding(0, dp(12), 0, dp(12));
         root.addView(status);
+
+        reliableBackground = button("Enable reliable background");
+        reliableBackground.setOnClickListener(v -> configureReliableBackground());
+        root.addView(reliableBackground);
+        updateReliableBackgroundState();
 
         Button discover = button("Discover Devices");
         discover.setOnClickListener(v -> { discovery.announceOnce(); setStatus("Discovery requested"); });

@@ -8,12 +8,14 @@ Android 端第一版只做**纯文本双向流转**，目标是用最小的系�
 - 当前剪贴板一键发送
 - 系统分享菜单发送选中的文本 / URL
 - Quick Settings Tile 一键发送当前剪贴板
-- PC → Android：前台接收服务监听 TCP 46793，解密后写入系统剪贴板
-- 开机广播恢复接收服务（用户关闭接收后不会恢复）
+- PC → Android：前台接收服务监听 TCP 46793，Span 界面不在前台时也会解密并写入系统剪贴板
+- 可选“可靠后台”系统托管服务：仅用于被厂商系统清理后恢复接收器，不读取界面、不模拟点击
+- 开机、快速开机及 APK 覆盖升级后恢复接收服务（用户关闭接收后不会恢复）
 - 局域网 UDP 自动发现
 - 设备信任 / 撤销
 - `X25519 + HKDF-SHA256 + ChaCha20-Poly1305`，与 Rust PC 端协议兼容
 - 原生 Android View，无 Compose、无第三方运行时
+- 空闲时使用阻塞 socket，不持有 CPU WakeLock 或 Wi‑Fi 高性能锁
 
 ## 当前边界
 
@@ -22,7 +24,11 @@ Android 端第一版只做**纯文本双向流转**，目标是用最小的系�
   - 打开 Span 后可读取当前剪贴板；
   - Quick Settings Tile 会短暂拉起 Span，再读取并发送；
   - 系统分享菜单是最可靠的选中文本入口。
-- PC → Android 接收是独立的前台服务，只接收已信任设备的加密 TCP 文本，不读取手机当前剪贴板。
+- PC → Android 接收是独立的前台服务，只接收已信任设备的加密 TCP 文本，不读取手机当前剪贴板。首次设置完成后，不需要先进入 Span；可直接打开微信、浏览器等目标 App 粘贴。
+- 华为、小米、三星等厂商可能清理普通前台服务。首次配对后点击 **Enable reliable background**：
+  1. 在系统“无障碍”设置中启用 **Span reliable background receiver**；
+  2. 返回 Span，再允许忽略电池优化。
+  该系统托管服务不订阅无障碍事件、不能读取窗口内容、不会执行手势，只负责保证局域网接收器存活。授权会在重启后保留。华为还建议在“应用启动管理”中允许 Span 自启动和后台活动。
 
 ## 本机编译
 
@@ -40,7 +46,7 @@ apps/android/app/build/outputs/apk/debug/app-debug.apk
 apps/android/app/build/outputs/apk/release/app-release.apk
 ```
 
-本机实测体积：debug 约 80K，R8 + 资源压缩后的 release debug-signed 约 29K，可直接侧载安装。注意它使用 Android debug key 自动签名，仅用于测试/开源预览，不适合 Play Store 或正式分发。
+本机实测体积：debug 约 67K，R8 + 资源压缩后的 release debug-signed 约 40K，可直接侧载安装。注意它使用 Android debug key 自动签名，仅用于测试/开源预览，不适合 Play Store 或正式分发。
 
 `local.properties` 只用于本机 Android SDK 路径，已加入根目录 `.gitignore`。
 
@@ -79,4 +85,4 @@ Android 端在 Devices 列表中点击 PC 的 **Trust**。手动配对时需要�
 1. 安装 JDK 21 和 Android 36 SDK；
 2. 运行 JVM 单元测试；
 3. 构建 debug 和 release APK；
-4. 上传 `span-android-debug-apk` artifact，其中同时包含 debug APK 和 release debug-signed APK。
+4. 上传 `span-android-apks` artifact，其中同时包含 debug APK 和 release debug-signed APK。

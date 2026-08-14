@@ -5,15 +5,11 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
-import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.IBinder;
-import android.os.PowerManager;
 import android.util.Log;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
@@ -35,16 +31,14 @@ public final class SpanReceiveService extends Service {
     private static final int MAX_PACKET_BYTES = (SpanProtocol.MAX_TEXT_BYTES + 32) * 2 + 256;
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
-    private final ExecutorService sender = Executors.newSingleThreadExecutor();
     private volatile boolean running;
     private ServerSocket serverSocket;
     private LocalIdentity identity;
     private SpanStore store;
     private SpanDiscovery discovery;
-    private ClipboardManager clipboard;
-    private ClipboardManager.OnPrimaryClipChangedListener clipboardListener;
-    private WifiManager.WifiLock wifiLock;
-    private PowerManager.WakeLock wakeLock;
+    private static volatile boolean serviceRunning;
+
+    static boolean isRunning() { return serviceRunning; }
 
     static void start(Context context) {
         Intent intent = new Intent(context, SpanReceiveService.class).setAction(ACTION_START);
@@ -61,6 +55,7 @@ public final class SpanReceiveService extends Service {
 
     @Override public void onCreate() {
         super.onCreate();
+        serviceRunning = true;
         store = new SpanStore(this);
         try {
             identity = store.loadOrCreateIdentity();
@@ -71,8 +66,6 @@ public final class SpanReceiveService extends Service {
         if (identity != null) {
             discovery = new SpanDiscovery(this, identity, device -> store.upsertDiscovered(device));
         }
-        clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-        clipboardListener = this::onLocalClipboardChanged;
         createNotificationChannel();
     }
 
@@ -82,8 +75,6 @@ public final class SpanReceiveService extends Service {
             return START_NOT_STICKY;
         }
         startForegroundCompat(buildListeningNotification());
-        acquireKeepAliveLocks();
-        startClipboardWatcher();
         startDiscovery();
         if (!running && identity != null) {
             running = true;
@@ -93,15 +84,13 @@ public final class SpanReceiveService extends Service {
     }
 
     @Override public void onDestroy() {
+        serviceRunning = false;
         running = false;
         if (serverSocket != null) {
             try { serverSocket.close(); } catch (Exception ignored) {}
         }
         stopDiscovery();
-        stopClipboardWatcher();
-        releaseKeepAliveLocks();
         executor.shutdownNow();
-        sender.shutdownNow();
         super.onDestroy();
     }
 
@@ -122,45 +111,6 @@ public final class SpanReceiveService extends Service {
     private void stopDiscovery() {
         try {
             if (discovery != null) discovery.destroy();
-        } catch (Exception ignored) {
-        }
-    }
-
-    private void acquireKeepAliveLocks() {
-        try {
-            if (wifiLock == null) {
-                WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
-                if (wifi != null) {
-                    wifiLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "Span:receiver-wifi");
-                    wifiLock.setReferenceCounted(false);
-                }
-            }
-            if (wifiLock != null && !wifiLock.isHeld()) wifiLock.acquire();
-        } catch (Exception error) {
-            Log.w(TAG, "Wi-Fi keepalive lock unavailable", error);
-        }
-
-        try {
-            if (wakeLock == null) {
-                PowerManager power = (PowerManager) getSystemService(POWER_SERVICE);
-                if (power != null) {
-                    wakeLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Span:receiver-cpu");
-                    wakeLock.setReferenceCounted(false);
-                }
-            }
-            if (wakeLock != null && !wakeLock.isHeld()) wakeLock.acquire();
-        } catch (Exception error) {
-            Log.w(TAG, "CPU keepalive lock unavailable", error);
-        }
-    }
-
-    private void releaseKeepAliveLocks() {
-        try {
-            if (wifiLock != null && wifiLock.isHeld()) wifiLock.release();
-        } catch (Exception ignored) {
-        }
-        try {
-            if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         } catch (Exception ignored) {
         }
     }
@@ -205,60 +155,38 @@ public final class SpanReceiveService extends Service {
             Log.w(TAG, "Malformed packet rejected");
             return;
         }
+        Log.i(TAG, "Packet received from " + shortId(packet.fromDeviceId));
 
         SpanDevice sender = store.trustedDevice(packet.fromDeviceId);
         if (sender == null || sender.publicKeyHex == null || sender.publicKeyHex.trim().isEmpty()) {
-            Log.w(TAG, "Packet rejected from untrusted sender");
+            Log.w(TAG, "Packet rejected from untrusted sender " + shortId(packet.fromDeviceId));
             return;
         }
 
         try {
             String text = SpanCrypto.decryptText(packet, identity.privateKeyHex, sender.publicKeyHex);
             byte[] utf8 = text.getBytes(StandardCharsets.UTF_8);
-            if (utf8.length > SpanProtocol.MAX_TEXT_BYTES) return;
-            ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-            if (clipboard == null) return;
+            if (utf8.length > SpanProtocol.MAX_TEXT_BYTES) {
+                Log.w(TAG, "Decrypted text exceeds limit from " + shortId(packet.fromDeviceId));
+                return;
+            }
+            Log.i(TAG, "Trusted text decrypted from " + shortId(packet.fromDeviceId)
+                    + " bytes=" + utf8.length);
             SpanClipboardSync.markRemoteClipboard(this, text);
-            clipboard.setPrimaryClip(ClipData.newPlainText("Span", text));
+            boolean written = SpanClipboardSync.writePendingRemoteClipboard(this);
+            Log.i(TAG, "System clipboard write " + (written ? "completed" : "deferred"));
             notifyReceived(sender.name, text);
         } catch (Exception error) {
-            Log.e(TAG, "Decrypt or clipboard update failed", error);
+            // Never log clipboard contents. Sender ID and the exception are enough
+            // to distinguish trust, crypto and platform clipboard failures.
+            Log.e(TAG, "Decrypt or clipboard update failed from "
+                    + shortId(packet.fromDeviceId), error);
         }
     }
 
-    private void startClipboardWatcher() {
-        try {
-            if (clipboard != null && clipboardListener != null) {
-                clipboard.removePrimaryClipChangedListener(clipboardListener);
-                clipboard.addPrimaryClipChangedListener(clipboardListener);
-            }
-        } catch (Exception ignored) {
-        }
-    }
-
-    private void stopClipboardWatcher() {
-        try {
-            if (clipboard != null && clipboardListener != null) {
-                clipboard.removePrimaryClipChangedListener(clipboardListener);
-            }
-        } catch (Exception ignored) {
-        }
-    }
-
-    private void onLocalClipboardChanged() {
-        sender.execute(() -> {
-            try {
-                int sent = SpanClipboardSync.sendCurrentClipboard(this);
-                Log.d(TAG, "Clipboard change sent to " + sent + " trusted device(s)");
-            } catch (SecurityException error) {
-                // Android 10+ commonly reports the change to a background app but
-                // denies reading its value. MainActivity retries after it gains
-                // window focus, which is the earliest reliable access point.
-                Log.w(TAG, "Background clipboard read denied; waiting for foreground wake", error);
-            } catch (Exception error) {
-                Log.e(TAG, "Clipboard send failed", error);
-            }
-        });
+    private static String shortId(String id) {
+        if (id == null || id.isEmpty()) return "-";
+        return id.length() <= 12 ? id : id.substring(0, 12) + "…";
     }
 
     private String readLineBounded(InputStream input) throws Exception {

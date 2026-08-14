@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <!-- Separate test APK/UID: stands in for WeChat, a browser, etc. -->
+        <activity
+            android:name="app.span.android.ClipboardProbeActivity"
+            android:exported="true" />
+    </application>
+</manifest>

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="span_keep_alive_label">Span reliable background receiver</string>
+    <string name="span_keep_alive_description">Keeps the trusted-device LAN receiver available. Span does not read screen content, inspect controls, or perform gestures.</string>
+</resources>

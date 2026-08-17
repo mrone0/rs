@@ -65,7 +65,8 @@ final class SpanClipboardSync {
         } catch (RuntimeException error) {
             // Keep the persisted pending value. The foreground Activity or the
             // system-bound watchdog can retry when Android permits the call.
-            Log.w(TAG, "System clipboard write deferred", error);
+            Log.w(TAG, "System clipboard write deferred from "
+                    + context.getClass().getSimpleName(), error);
             return false;
         }
 

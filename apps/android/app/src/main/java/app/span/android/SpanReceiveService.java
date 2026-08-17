@@ -174,8 +174,12 @@ public final class SpanReceiveService extends Service {
                     + " bytes=" + utf8.length);
             SpanClipboardSync.markRemoteClipboard(this, text);
             boolean written = SpanClipboardSync.writePendingRemoteClipboard(this);
-            Log.i(TAG, "System clipboard write " + (written ? "completed" : "deferred"));
-            notifyReceived(sender.name, text);
+            if (!written && SpanKeepAliveService.requestClipboardRetry()) {
+                Log.i(TAG, "System clipboard write handed to accessibility watchdog");
+            } else {
+                Log.i(TAG, "System clipboard write " + (written ? "completed" : "deferred"));
+            }
+            notifyReceived(sender.name, text, written);
         } catch (Exception error) {
             // Never log clipboard contents. Sender ID and the exception are enough
             // to distinguish trust, crypto and platform clipboard failures.
@@ -231,13 +235,11 @@ public final class SpanReceiveService extends Service {
                 .build();
     }
 
-    private void notifyReceived(String senderName, String text) {
-        String preview = text.replace('\n', ' ').trim();
-        if (preview.length() > 80) preview = preview.substring(0, 80) + "…";
+    private void notifyReceived(String senderName, String text, boolean written) {
         Notification notification = new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_span)
                 .setContentTitle("Text received from " + senderName)
-                .setContentText(preview.isEmpty() ? "Clipboard updated" : preview)
+                .setContentText(written ? "Clipboard updated" : "Clipboard update pending")
                 .setAutoCancel(true)
                 .build();
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);

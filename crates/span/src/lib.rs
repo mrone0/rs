@@ -359,6 +359,7 @@ fn broadcast_clipboard_text(
         *pending = Some(text.clone());
     }
 
+    refresh_trusted_endpoints(store_path, local, Duration::from_millis(350))?;
     let store = TrustStore::load(store_path)?;
     let targets = store
         .trusted_devices()
@@ -399,6 +400,49 @@ fn broadcast_clipboard_text(
         }
     }
 
+    Ok(())
+}
+
+fn refresh_trusted_endpoints(
+    store_path: &std::path::Path,
+    local: &LocalDevice,
+    timeout: Duration,
+) -> io::Result<()> {
+    let discovered = discover_once(local, timeout)?;
+    if discovered.is_empty() {
+        return Ok(());
+    }
+
+    let mut store = TrustStore::load(store_path)?;
+    let mut changed = false;
+    for (packet, addr) in discovered {
+        let endpoint = addr.ip().to_string();
+        for trusted in store
+            .trusted_devices()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let same_identity = trusted.id == packet.id
+                || trusted
+                    .public_key
+                    .as_deref()
+                    .map(|key| key == packet.public_key)
+                    .unwrap_or(false);
+            if !same_identity {
+                continue;
+            }
+            changed |= store.update_endpoint_and_key(
+                &trusted.id,
+                endpoint.clone(),
+                packet.public_key.clone(),
+            )?;
+        }
+    }
+
+    if changed {
+        store.save_now()?;
+    }
     Ok(())
 }
 

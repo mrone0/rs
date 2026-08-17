@@ -6,19 +6,24 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
+import java.lang.ref.WeakReference;
 import android.view.accessibility.AccessibilityManager;
 import java.util.List;
 
 /**
  * Optional system-bound watchdog for vendors that kill normal foreground services.
  *
- * It requests no accessibility events, reads no screen content, and performs no
- * gestures. Android keeps the service binding after the user enables it; that
- * binding is used only to restore Span's tiny LAN receiver when needed.
+ * It reads no screen content and performs no gestures. Android keeps the
+ * service binding after the user enables it; that binding is used to restore
+ * Span's tiny LAN receiver and retry a deferred PC clipboard write when the
+ * user switches into another app to paste.
  */
 public final class SpanKeepAliveService extends AccessibilityService {
     private static final long HEARTBEAT_MILLIS = 60_000;
+    private static final long EVENT_RETRY_DEBOUNCE_MILLIS = 500;
+    private static WeakReference<SpanKeepAliveService> activeService = new WeakReference<>(null);
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private long lastEventRetryMillis;
     private final Runnable heartbeat = new Runnable() {
         @Override public void run() {
             ensureReceiver();
@@ -28,13 +33,24 @@ public final class SpanKeepAliveService extends AccessibilityService {
 
     @Override protected void onServiceConnected() {
         super.onServiceConnected();
+        activeService = new WeakReference<>(this);
         handler.removeCallbacks(heartbeat);
         ensureReceiver();
         handler.postDelayed(heartbeat, HEARTBEAT_MILLIS);
     }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
-        // Intentionally empty: Span does not inspect apps, windows, or controls.
+        // Do not inspect event contents. A foreground app switch is enough to
+        // retry a pending PC clipboard write before the user long-presses Paste.
+        int type = event == null ? 0 : event.getEventType();
+        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
+                && type != AccessibilityEvent.TYPE_WINDOWS_CHANGED) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastEventRetryMillis < EVENT_RETRY_DEBOUNCE_MILLIS) return;
+        lastEventRetryMillis = now;
+        ensureReceiver();
     }
 
     @Override public void onInterrupt() {
@@ -43,6 +59,8 @@ public final class SpanKeepAliveService extends AccessibilityService {
 
     @Override public void onDestroy() {
         handler.removeCallbacks(heartbeat);
+        SpanKeepAliveService current = activeService.get();
+        if (current == this) activeService = new WeakReference<>(null);
         super.onDestroy();
     }
 
@@ -52,6 +70,13 @@ public final class SpanKeepAliveService extends AccessibilityService {
         // A pending item only remains when a previous platform clipboard call
         // threw. Retry it after Android rebinds this watchdog.
         SpanClipboardSync.writePendingRemoteClipboard(this);
+    }
+
+    static boolean requestClipboardRetry() {
+        SpanKeepAliveService service = activeService.get();
+        if (service == null) return false;
+        service.handler.post(service::ensureReceiver);
+        return true;
     }
 
     static boolean isEnabled(Context context) {

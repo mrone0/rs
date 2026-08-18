@@ -62,6 +62,16 @@ final class SpanClipboardSync {
         if (clipboard == null) return false;
         try {
             clipboard.setPrimaryClip(ClipData.newPlainText("Span", text));
+            // setPrimaryClip is asynchronous on some Android/vendor builds. Keep
+            // the value pending until the system reports the same primary clip;
+            // this lets the next foreground-window callback retry instead of
+            // falsely treating a dropped background write as delivered.
+            if (!clipboard.hasPrimaryClip()) return false;
+            ClipData written = clipboard.getPrimaryClip();
+            if (written == null || written.getItemCount() == 0
+                    || !text.contentEquals(written.getItemAt(0).coerceToText(context))) {
+                return false;
+            }
         } catch (RuntimeException error) {
             // Keep the persisted pending value. The foreground Activity or the
             // system-bound watchdog can retry when Android permits the call.

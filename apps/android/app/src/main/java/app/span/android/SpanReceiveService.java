@@ -227,19 +227,19 @@ public final class SpanReceiveService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         return new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_span)
-                .setContentTitle("Span")
-                .setContentText("Receiving from PC in background")
+                .setContentTitle("Span 后台同步")
+                .setContentText("正在接收可信设备发送的文本")
                 .setOngoing(true)
                 .setContentIntent(pending)
-                .addAction(R.drawable.ic_span, "Send clipboard", sendPending)
+                .addAction(R.drawable.ic_span, "发送剪贴板", sendPending)
                 .build();
     }
 
     private void notifyReceived(String senderName, String text, boolean written) {
         Notification notification = new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_span)
-                .setContentTitle("Text received from " + senderName)
-                .setContentText(written ? "Clipboard updated" : "Clipboard update pending")
+                .setContentTitle("收到来自 " + senderName + " 的文本")
+                .setContentText(written ? "已写入剪贴板，可以直接粘贴" : "等待系统允许写入剪贴板")
                 .setAutoCancel(true)
                 .build();
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
@@ -251,8 +251,8 @@ public final class SpanReceiveService extends Service {
         NotificationManager manager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (manager == null) return;
         NotificationChannel channel = new NotificationChannel(
-                CHANNEL_ID, "Span transfer", NotificationManager.IMPORTANCE_LOW);
-        channel.setDescription("Span trusted-device clipboard transfer");
+                CHANNEL_ID, "Span 剪贴板同步", NotificationManager.IMPORTANCE_LOW);
+        channel.setDescription("在可信设备之间接收和发送剪贴板文本");
         manager.createNotificationChannel(channel);
     }
 }

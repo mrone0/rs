@@ -54,6 +54,7 @@ mod macos {
         fn NSApplicationLoad() -> BOOL;
     }
 
+
     #[link(name = "objc")]
     unsafe extern "C" {
         fn objc_getClass(name: *const c_char) -> Id;
@@ -70,6 +71,7 @@ mod macos {
     static TRUSTED_SUMMARY_LABEL: OnceLock<usize> = OnceLock::new();
     static TRUSTED_POPUP: OnceLock<usize> = OnceLock::new();
     static CONTROLLER_CLASS: OnceLock<usize> = OnceLock::new();
+    static CONTROLLER_INSTANCE: OnceLock<usize> = OnceLock::new();
     static ACTION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
     pub fn open() -> io::Result<()> {
@@ -99,7 +101,7 @@ mod macos {
             send_void_bool(app, sel("activateIgnoringOtherApps:")?, 1);
 
             let message = format!(
-                "{} ({}) wants to connect to Span.\n\nAccept and enable clipboard sync?",
+                "{}（{}）请求连接 Span。\n\n是否信任此设备并开启剪贴板同步？",
                 name, platform
             );
             let accepted = confirm_accept(&message);
@@ -109,7 +111,7 @@ mod macos {
                 })?;
                 let mut store = TrustStore::load(trust_store_path()?)?;
                 store.trust_existing(&id)?;
-                show_alert(&format!("Accepted {name}. Copy/paste sync is active."));
+                show_alert(&format!("已信任 {name}，剪贴板同步已开启。"));
             }
             objc_autoreleasePoolPop(pool);
         }
@@ -133,6 +135,7 @@ mod macos {
         if controller.is_null() {
             return Err(io::Error::other("could not create GUI controller"));
         }
+        let _ = CONTROLLER_INSTANCE.set(controller as usize);
         send_void_id(app, sel("setDelegate:")?, controller);
 
         let rect = Rect {
@@ -175,7 +178,7 @@ mod macos {
         )?;
         add_label(
             content,
-            "Copy on one trusted device · paste on another",
+            "在可信设备之间自动同步剪贴板",
             Rect {
                 origin: Point { x: 30.0, y: 280.0 },
                 size: Size {
@@ -188,7 +191,7 @@ mod macos {
         )?;
         add_label(
             content,
-            &format!("This Mac · {}", local.name),
+            &format!("本机：{}", local.name),
             Rect {
                 origin: Point { x: 30.0, y: 250.0 },
                 size: Size {
@@ -199,7 +202,7 @@ mod macos {
             13.0,
             true,
         )?;
-        let mut rows = format!("Trusted devices ({trusted_count})\n");
+        let mut rows = format!("可信设备（{trusted_count}）\n");
         for device in devices
             .iter()
             .filter(|d| d.trust_state == TrustState::Trusted)
@@ -211,7 +214,7 @@ mod macos {
             ));
         }
         if trusted_count == 0 {
-            rows.push_str("None yet — click Discover to pair a device.");
+            rows.push_str("暂无设备，请点击“发现设备”进行配对。");
         }
         let trusted_summary = add_label(
             content,
@@ -230,7 +233,7 @@ mod macos {
 
         let status = add_label(
             content,
-            "Ready · clipboard broadcasts to trusted devices only",
+            "运行中 · 仅向可信设备同步剪贴板",
             Rect {
                 origin: Point { x: 30.0, y: 92.0 },
                 size: Size {
@@ -246,7 +249,7 @@ mod macos {
         add_button(
             content,
             controller,
-            "Discover",
+            "发现设备",
             "spanDiscover:",
             1,
             Rect {
@@ -260,7 +263,7 @@ mod macos {
         add_button(
             content,
             controller,
-            "Remove device",
+            "移除设备",
             "spanRemove:",
             2,
             Rect {
@@ -339,7 +342,7 @@ mod macos {
             send_void_id(
                 popup,
                 sel("addItemWithTitle:")?,
-                ns_string(&format!("Remove {}", device.name)),
+                ns_string(&format!("移除 {}", device.name)),
             );
             count += 1;
         }
@@ -347,7 +350,7 @@ mod macos {
             send_void_id(
                 popup,
                 sel("addItemWithTitle:")?,
-                ns_string("No trusted devices"),
+                ns_string("暂无可信设备"),
             );
         }
         send_void_id(parent, sel("addSubview:")?, popup);
@@ -392,6 +395,8 @@ mod macos {
         for (name, callback) in [
             ("spanDiscover:", action_discover as IMP),
             ("spanRemove:", action_remove as IMP),
+            ("spanCompleteDiscover:", complete_discover as IMP),
+            ("spanCompleteRemove:", complete_remove as IMP),
         ] {
             let selector = sel(name)?;
             if class_addMethod(cls, selector, callback, type_encoding.as_ptr()) == 0 {
@@ -415,71 +420,114 @@ mod macos {
     }
 
     unsafe extern "C" fn action_discover(_: Id, _: Sel, _: Id) {
-        action_result("Discovering devices…", || {
-            let local = load_or_create_local_device()?;
-            let devices = crate::scan_devices(&local, Duration::from_secs(3))?;
-            let available: Vec<_> = devices
-                .iter()
-                .filter(|device| device.trust_state != TrustState::Trusted)
-                .collect();
-            if available.is_empty() {
-                return Ok(
-                    "No new devices found. Trusted devices keep syncing automatically.".into(),
+        if ACTION_IN_PROGRESS.swap(true, Ordering::AcqRel) { return; }
+        set_status("正在发现设备…");
+        std::thread::spawn(|| {
+            let result = load_or_create_local_device()
+                .and_then(|local| crate::scan_devices(&local, Duration::from_millis(700)))
+                .map(|_| "")
+                .unwrap_or("操作失败，请检查网络设置。");
+            let Some(controller) = CONTROLLER_INSTANCE.get().copied() else {
+                ACTION_IN_PROGRESS.store(false, Ordering::Release);
+                return;
+            };
+            unsafe {
+                send_void_id_bool(
+                    controller as Id,
+                    sel("performSelectorOnMainThread:withObject:waitUntilDone:").unwrap(),
+                    sel("spanCompleteDiscover:").unwrap() as Id,
+                    ns_string(result),
+                    0,
                 );
             }
-            let names = available
-                .iter()
+        });
+    }
+
+    unsafe extern "C" fn complete_discover(_: Id, _: Sel, error_message: Id) {
+        let result = (|| -> io::Result<String> {
+            if send_u64(error_message, sel("length")?) > 0 {
+                return Ok("发现失败，请检查网络设置。".into());
+            }
+            let store = TrustStore::load(trust_store_path()?)?;
+            refresh_trusted_controls(&store)?;
+            let available: Vec<_> = store.devices().iter()
+                .filter(|device| device.trust_state != TrustState::Trusted).collect();
+            if available.is_empty() { return Ok("没有发现新设备。可信设备会自动同步。".into()); }
+            let names = available.iter()
                 .map(|device| format!("{} ({})", device.name, platform_name(device.platform)))
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !confirm_accept(&format!(
-                "New Span device(s) found:\n\n{names}\n\nAccept and allow clipboard sync?"
-            )) {
-                return Ok("Pairing cancelled. No clipboard data was shared.".into());
+                .collect::<Vec<_>>().join("\n");
+            if !confirm_accept(&format!("发现新设备：\n\n{names}\n\n是否信任并开启剪贴板同步？")) {
+                return Ok("已取消配对，未共享剪贴板内容。".into());
             }
             let mut store = TrustStore::load(trust_store_path()?)?;
             let mut accepted = 0;
-            for device in &available {
-                if store.trust_existing(&device.id)? {
-                    accepted += 1;
-                }
-            }
+            for device in &available { if store.trust_existing(&device.id)? { accepted += 1; } }
             refresh_trusted_controls(&store)?;
-            Ok(format!(
-                "Accepted {} device(s). Copy/paste sync is active.",
-                accepted
-            ))
-        });
+            Ok(format!("已信任 {} 台设备，剪贴板同步已开启。", accepted))
+        })();
+        set_status(&result.unwrap_or_else(|error| format!("操作失败：{error}")));
+        ACTION_IN_PROGRESS.store(false, Ordering::Release);
     }
     unsafe extern "C" fn action_remove(_: Id, _: Sel, _: Id) {
-        action_result("Removing device…", || {
-            let path = trust_store_path()?;
-            let store = TrustStore::load(&path)?;
+        if ACTION_IN_PROGRESS.swap(true, Ordering::AcqRel) { return; }
+        let result = (|| -> io::Result<(span_core::DeviceId, String)> {
+            let store = TrustStore::load(trust_store_path()?)?;
             let trusted = store.trusted_devices();
             let Some(popup) = TRUSTED_POPUP.get().copied() else {
-                return Ok("No trusted devices to remove.".into());
+                return Err(io::Error::other("暂无可移除的可信设备。"));
             };
             let index = send_integer(popup as Id, sel("indexOfSelectedItem")?);
             let Some(device) = trusted.get(index.max(0) as usize) else {
-                return Ok("No trusted devices to remove.".into());
+                return Err(io::Error::other("暂无可移除的可信设备。"));
             };
-            let id = device.id.clone();
-            let name = device.name.clone();
-            if !confirm_accept(&format!("Remove {name} from trusted devices?")) {
-                return Ok("Removal cancelled.".into());
+            Ok((device.id.clone(), device.name.clone()))
+        })();
+        let Ok((id, name)) = result else {
+            set_status("暂无可移除的可信设备。");
+            ACTION_IN_PROGRESS.store(false, Ordering::Release);
+            return;
+        };
+        if !confirm_accept(&format!("是否移除可信设备“{name}”？")) {
+            set_status("已取消移除。");
+            ACTION_IN_PROGRESS.store(false, Ordering::Release);
+            return;
+        }
+        set_status("正在移除设备…");
+        std::thread::spawn(move || {
+            let message = trust_store_path()
+                .and_then(TrustStore::load)
+                .and_then(|mut store| { store.revoke(&id)?; Ok(format!("已移除 {name}。")) })
+                .unwrap_or_else(|error| format!("操作失败：{error}"));
+            let Some(controller) = CONTROLLER_INSTANCE.get().copied() else {
+                ACTION_IN_PROGRESS.store(false, Ordering::Release);
+                return;
+            };
+            unsafe {
+                send_void_id_bool(
+                    controller as Id,
+                    sel("performSelectorOnMainThread:withObject:waitUntilDone:").unwrap(),
+                    sel("spanCompleteRemove:").unwrap() as Id,
+                    ns_string(&message),
+                    0,
+                );
             }
-            let mut store = TrustStore::load(path)?;
-            store.revoke(&id)?;
-            refresh_trusted_controls(&store)?;
-            Ok(format!("Removed {name}."))
         });
+    }
+
+    unsafe extern "C" fn complete_remove(_: Id, _: Sel, message: Id) {
+        if let Ok(store) = trust_store_path().and_then(TrustStore::load) {
+            let _ = refresh_trusted_controls(&store);
+        }
+        let value = ns_string_to_string(message).unwrap_or_else(|| "操作完成。".into());
+        set_status(&value);
+        ACTION_IN_PROGRESS.store(false, Ordering::Release);
     }
 
     unsafe fn refresh_trusted_controls(store: &TrustStore) -> io::Result<()> {
         let trusted = store.trusted_devices();
 
         if let Some(pointer) = TRUSTED_SUMMARY_LABEL.get() {
-            let mut rows = format!("Trusted devices ({})\n", trusted.len());
+            let mut rows = format!("可信设备（{}）\n", trusted.len());
             for device in &trusted {
                 rows.push_str(&format!(
                     "• {} · {}\n",
@@ -488,7 +536,7 @@ mod macos {
                 ));
             }
             if trusted.is_empty() {
-                rows.push_str("None yet — click Discover to pair a device.");
+                rows.push_str("暂无设备，请点击“发现设备”进行配对。");
             }
             send_void_id(*pointer as Id, sel("setStringValue:")?, ns_string(&rows));
         }
@@ -500,14 +548,14 @@ mod macos {
                 send_void_id(
                     popup,
                     sel("addItemWithTitle:")?,
-                    ns_string(&format!("Remove {}", device.name)),
+                    ns_string(&format!("移除 {}", device.name)),
                 );
             }
             if trusted.is_empty() {
                 send_void_id(
                     popup,
                     sel("addItemWithTitle:")?,
-                    ns_string("No trusted devices"),
+                    ns_string("暂无可信设备"),
                 );
             }
             send_void_integer(popup, sel("selectItemAtIndex:")?, 0);
@@ -535,30 +583,14 @@ mod macos {
         send_id_id(
             alert,
             sel("addButtonWithTitle:").unwrap(),
-            ns_string("Accept"),
+            ns_string("信任"),
         );
         send_id_id(
             alert,
             sel("addButtonWithTitle:").unwrap(),
-            ns_string("Not now"),
+            ns_string("暂不"),
         );
         send_integer(alert, sel("runModal").unwrap()) == 1000
-    }
-
-    fn action_result(initial: &str, action: impl FnOnce() -> io::Result<String>) {
-        if ACTION_IN_PROGRESS.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        set_status(initial);
-        let message = match action() {
-            Ok(message) => message,
-            Err(error) => format!("Error: {error}"),
-        };
-        set_status(&message);
-        unsafe {
-            show_alert(&message);
-        }
-        ACTION_IN_PROGRESS.store(false, Ordering::Release);
     }
 
     fn set_status(value: &str) {
@@ -581,8 +613,16 @@ mod macos {
             sel("setInformativeText:").unwrap(),
             ns_string(message),
         );
-        send_id_id(alert, sel("addButtonWithTitle:").unwrap(), ns_string("OK"));
+        send_id_id(alert, sel("addButtonWithTitle:").unwrap(), ns_string("知道了"));
         send_integer(alert, sel("runModal").unwrap());
+    }
+
+    fn ns_string_to_string(value: Id) -> Option<String> {
+        unsafe {
+            let pointer = send_id(value, sel("UTF8String").ok()?) as *const c_char;
+            if pointer.is_null() { return None; }
+            Some(std::ffi::CStr::from_ptr(pointer).to_string_lossy().into_owned())
+        }
     }
 
     fn ns_string(value: &str) -> Id {
@@ -669,6 +709,15 @@ mod macos {
         let f: unsafe extern "C" fn(Id, Sel, Id) = std::mem::transmute(objc_msgSend as *const ());
         f(receiver, selector, arg)
     }
+    unsafe fn send_void_id_bool(receiver: Id, selector: Sel, arg1: Id, arg2: Id, arg3: BOOL) {
+        let f: unsafe extern "C" fn(Id, Sel, Id, Id, BOOL) =
+            std::mem::transmute(objc_msgSend as *const ());
+        f(receiver, selector, arg1, arg2, arg3)
+    }
+    unsafe fn send_u64(receiver: Id, selector: Sel) -> u64 {
+        let f: unsafe extern "C" fn(Id, Sel) -> u64 = std::mem::transmute(objc_msgSend as *const ());
+        f(receiver, selector)
+    }
     unsafe fn send_void_rect(receiver: Id, selector: Sel, arg: Rect) {
         let f: unsafe extern "C" fn(Id, Sel, Rect) = std::mem::transmute(objc_msgSend as *const ());
         f(receiver, selector, arg)
@@ -703,15 +752,17 @@ mod windows {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         BN_CLICKED, BS_PUSHBUTTON, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW,
         DispatchMessageW, GetMessageW, LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LBS_NOTIFY,
-        MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MSG, MessageBoxW, PostQuitMessage,
-        RegisterClassW, SW_SHOW, SendMessageW, SetWindowTextW, ShowWindow, TranslateMessage,
-        WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSW, WS_BORDER, WS_CHILD, WS_OVERLAPPEDWINDOW,
+        MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MSG, MessageBoxW, PostMessageW,
+        PostQuitMessage, RegisterClassW, SW_SHOW, SendMessageW, SetWindowTextW, ShowWindow,
+        TranslateMessage, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSW, WS_BORDER, WS_CHILD,
+        WS_OVERLAPPEDWINDOW,
         WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
     };
 
     const ID_DISCOVER: u16 = 1001;
     const ID_REMOVE: u16 = 1002;
     const ID_TRUSTED_LIST: u16 = 2001;
+    const WM_SPAN_ACTION_DONE: u32 = WM_APP + 1;
 
     static STATUS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     static TRUSTED_LIST: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
@@ -719,7 +770,7 @@ mod windows {
 
     pub fn prompt_pairing(device_id: &str, name: &str, platform: &str) -> io::Result<()> {
         let prompt = format!(
-            "{} ({}) wants to connect to Span.\r\n\r\nAccept and enable clipboard sync?",
+            "{}（{}）请求连接 Span。\r\n\r\n是否信任此设备并开启剪贴板同步？",
             name, platform
         );
         if unsafe { ask_yes_no(&prompt) } {
@@ -731,7 +782,7 @@ mod windows {
             unsafe {
                 show_info(
                     ptr::null_mut(),
-                    &format!("Accepted {name}. Copy/paste sync is active."),
+                    &format!("已信任 {name}，剪贴板同步已开启。"),
                 );
             }
         }
@@ -744,7 +795,7 @@ mod windows {
         let _ = crate::autostart::install();
         let _ = crate::daemon_control::start_daemon();
         let class_name = wide("SpanGuiWindow");
-        let title = wide("Span · Cross-device clipboard");
+        let title = wide("Span · 跨设备剪贴板");
 
         unsafe {
             let instance = GetModuleHandleW(ptr::null());
@@ -813,8 +864,12 @@ mod windows {
                 let id = (wparam & 0xffff) as u16;
                 let code = ((wparam >> 16) & 0xffff) as u16;
                 if u32::from(code) == BN_CLICKED {
-                    run_action(hwnd, id);
+                    start_action(hwnd, id);
                 }
+                0
+            }
+            WM_SPAN_ACTION_DONE => {
+                finish_action(hwnd, wparam as u16, _lparam as *mut String);
                 0
             }
             WM_DESTROY => {
@@ -831,7 +886,7 @@ mod windows {
         add_control(
             hwnd,
             "STATIC",
-            "Copy on one trusted device · paste on another",
+            "在可信设备之间自动同步剪贴板",
             24,
             54,
             500,
@@ -842,7 +897,7 @@ mod windows {
         add_control(
             hwnd,
             "STATIC",
-            &format!("This PC: {}", local.name),
+            &format!("本机：{}", local.name),
             24,
             84,
             500,
@@ -853,7 +908,7 @@ mod windows {
         add_control(
             hwnd,
             "STATIC",
-            "Clipboard broadcasts only to trusted devices.",
+            "仅向可信设备同步剪贴板。",
             24,
             108,
             500,
@@ -861,7 +916,7 @@ mod windows {
             0,
             0,
         )?;
-        add_control(hwnd, "STATIC", "Trusted devices", 24, 142, 500, 22, 0, 0)?;
+        add_control(hwnd, "STATIC", "可信设备", 24, 142, 500, 22, 0, 0)?;
 
         let list = add_control(
             hwnd,
@@ -877,10 +932,10 @@ mod windows {
         let _ = TRUSTED_LIST.set(list as usize);
         refresh_trusted_list();
 
-        let status = add_control(hwnd, "STATIC", "Ready", 24, 282, 500, 32, 0, 0)?;
+        let status = add_control(hwnd, "STATIC", "运行中 · 仅向可信设备同步剪贴板", 24, 282, 500, 32, 0, 0)?;
         let _ = STATUS.set(status as usize);
-        button(hwnd, "Discover", ID_DISCOVER, 24, 326, 140, 34)?;
-        button(hwnd, "Remove selected", ID_REMOVE, 180, 326, 140, 34)?;
+        button(hwnd, "发现设备", ID_DISCOVER, 24, 326, 140, 34)?;
+        button(hwnd, "移除选中设备", ID_REMOVE, 180, 326, 140, 34)?;
         Ok(())
     }
 
@@ -940,42 +995,57 @@ mod windows {
         }
     }
 
-    unsafe fn run_action(hwnd: HWND, id: u16) {
+    unsafe fn start_action(hwnd: HWND, id: u16) {
         if ACTION_IN_PROGRESS.swap(true, Ordering::AcqRel) {
             return;
         }
-        set_status("Working…");
-        let result = match id {
-            ID_DISCOVER => discover_and_pair(),
-            ID_REMOVE => remove_selected(),
-            _ => {
-                ACTION_IN_PROGRESS.store(false, Ordering::Release);
-                return;
+        set_status("处理中，请稍候…");
+        let hwnd_value = hwnd as usize;
+        std::thread::spawn(move || {
+            let result = match id {
+                ID_DISCOVER => discover_and_pair(),
+                ID_REMOVE => remove_selected(),
+                _ => Ok(String::new()),
+            };
+            let message = match result {
+                Ok(message) => message,
+                Err(error) => format!("操作失败：{error}"),
+            };
+            let boxed = Box::new(message);
+            unsafe {
+                PostMessageW(
+                    hwnd_value as HWND,
+                    WM_SPAN_ACTION_DONE,
+                    id as usize,
+                    Box::into_raw(boxed) as LPARAM,
+                );
             }
-        };
-        match result {
-            Ok(message) => {
-                refresh_trusted_list();
-                set_status(&message);
-                show_info(hwnd, &message);
-            }
-            Err(error) => {
-                set_status(&format!("Error: {error}"));
-                show_error(hwnd, &error.to_string());
-            }
+        });
+    }
+
+    unsafe fn finish_action(hwnd: HWND, _id: u16, raw: *mut String) {
+        if raw.is_null() {
+            ACTION_IN_PROGRESS.store(false, Ordering::Release);
+            return;
+        }
+        let message = *Box::from_raw(raw);
+        refresh_trusted_list();
+        set_status(&message);
+        if message.starts_with("操作失败：") {
+            show_error(hwnd, &message);
         }
         ACTION_IN_PROGRESS.store(false, Ordering::Release);
     }
 
     fn discover_and_pair() -> io::Result<String> {
         let local = crate::config::load_or_create_local_device()?;
-        let devices = crate::scan_devices(&local, Duration::from_secs(3))?;
+        let devices = crate::scan_devices(&local, Duration::from_millis(700))?;
         let available: Vec<_> = devices
             .iter()
             .filter(|device| device.trust_state != TrustState::Trusted)
             .collect();
         if available.is_empty() {
-            return Ok("No new devices found. Trusted devices sync automatically.".into());
+            return Ok("没有发现新设备，可信设备会自动同步。".into());
         }
 
         let names = available
@@ -990,7 +1060,7 @@ mod windows {
             .collect::<Vec<_>>()
             .join("\n");
         let prompt = format!(
-            "New Span device(s) found:\r\n\r\n{names}\r\n\r\nAccept and enable clipboard sync?"
+            "发现新设备：\r\n\r\n{names}\r\n\r\n是否信任并开启剪贴板同步？"
         );
         if unsafe { ask_yes_no(&prompt) } {
             let mut store =
@@ -999,36 +1069,36 @@ mod windows {
                 store.trust_existing(&device.id)?;
             }
             Ok(format!(
-                "Accepted {} device(s). Copy/paste sync is active.",
+                "已信任 {} 台设备，剪贴板同步已开启。",
                 names.lines().count()
             ))
         } else {
-            Ok("Pairing cancelled. No clipboard data was shared.".into())
+            Ok("已取消配对，未共享剪贴板内容。".into())
         }
     }
 
     fn remove_selected() -> io::Result<String> {
         let Some(list) = TRUSTED_LIST.get().copied() else {
-            return Ok("No trusted devices to remove.".into());
+            return Ok("暂无可移除的可信设备。".into());
         };
         let selected = unsafe { SendMessageW(list as HWND, LB_GETCURSEL, 0, 0) };
         if selected < 0 {
-            return Ok("Select a trusted device first.".into());
+            return Ok("请先选择一个可信设备。".into());
         }
         let path = crate::config::trust_store_path()?;
         let store = crate::trust_store::TrustStore::load(&path)?;
         let trusted = store.trusted_devices();
         let Some(device) = trusted.get(selected as usize) else {
-            return Ok("The trusted-device list changed. Please try again.".into());
+            return Ok("设备列表已变化，请重试。".into());
         };
         let id = device.id.clone();
         let name = device.name.clone();
-        if unsafe { ask_yes_no(&format!("Remove {name} from trusted devices?")) } {
+        if unsafe { ask_yes_no(&format!("是否移除可信设备“{name}”？")) } {
             let mut store = crate::trust_store::TrustStore::load(path)?;
             store.revoke(&id)?;
-            Ok(format!("Removed {name}."))
+            Ok(format!("已移除 {name}。"))
         } else {
-            Ok("Removal cancelled.".into())
+            Ok("已取消移除。".into())
         }
     }
 
@@ -1045,7 +1115,7 @@ mod windows {
         };
         let trusted = store.trusted_devices();
         if trusted.is_empty() {
-            let text = wide("No trusted devices yet — click Discover.");
+            let text = wide("暂无可信设备，请点击“发现设备”。");
             SendMessageW(list as HWND, LB_ADDSTRING, 0, text.as_ptr() as LPARAM);
             return;
         }

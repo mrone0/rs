@@ -72,18 +72,18 @@ public final class SendClipboardActivity extends Activity {
             runOnUiThread(() -> {
                 Toast.makeText(
                         this,
-                        sent == 0 ? "No trusted devices or empty clipboard" : "Sent to " + sent + " device(s)",
+                        sent == 0 ? "没有可信设备或剪贴板为空" : "已发送到 " + sent + " 台设备",
                         Toast.LENGTH_SHORT).show();
                 finish();
             });
         } catch (SecurityException error) {
             runOnUiThread(() -> {
-                Toast.makeText(this, "Android blocked clipboard access", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "系统暂时不允许读取剪贴板", Toast.LENGTH_SHORT).show();
                 finish();
             });
         } catch (Exception error) {
             runOnUiThread(() -> {
-                Toast.makeText(this, "Send failed", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "发送失败，请检查设备是否在线", Toast.LENGTH_SHORT).show();
                 finish();
             });
         }

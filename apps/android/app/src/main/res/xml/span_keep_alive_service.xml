@@ -3,5 +3,6 @@
     android:description="@string/span_keep_alive_description"
     android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRequestAccessibilityButton"
     android:notificationTimeout="250"
     android:canRetrieveWindowContent="false" />

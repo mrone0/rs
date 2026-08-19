@@ -1,8 +1,10 @@
 package app.span.android;
 
+import android.accessibilityservice.AccessibilityButtonController;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Context;
+import android.content.Intent;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
@@ -24,6 +26,13 @@ public final class SpanKeepAliveService extends AccessibilityService {
     private static WeakReference<SpanKeepAliveService> activeService = new WeakReference<>(null);
     private final Handler handler = new Handler(Looper.getMainLooper());
     private long lastEventRetryMillis;
+    private AccessibilityButtonController accessibilityButtonController;
+    private final AccessibilityButtonController.AccessibilityButtonCallback accessibilityButtonCallback =
+            new AccessibilityButtonController.AccessibilityButtonCallback() {
+                @Override public void onClicked(AccessibilityButtonController controller) {
+                    launchClipboardSend();
+                }
+            };
     private final Runnable heartbeat = new Runnable() {
         @Override public void run() {
             ensureReceiver();
@@ -34,6 +43,9 @@ public final class SpanKeepAliveService extends AccessibilityService {
     @Override protected void onServiceConnected() {
         super.onServiceConnected();
         activeService = new WeakReference<>(this);
+        accessibilityButtonController = getAccessibilityButtonController();
+        accessibilityButtonController.registerAccessibilityButtonCallback(
+                accessibilityButtonCallback, handler);
         handler.removeCallbacks(heartbeat);
         ensureReceiver();
         handler.postDelayed(heartbeat, HEARTBEAT_MILLIS);
@@ -59,9 +71,22 @@ public final class SpanKeepAliveService extends AccessibilityService {
 
     @Override public void onDestroy() {
         handler.removeCallbacks(heartbeat);
+        if (accessibilityButtonController != null) {
+            accessibilityButtonController.unregisterAccessibilityButtonCallback(
+                    accessibilityButtonCallback);
+            accessibilityButtonController = null;
+        }
         SpanKeepAliveService current = activeService.get();
         if (current == this) activeService = new WeakReference<>(null);
         super.onDestroy();
+    }
+
+    private void launchClipboardSend() {
+        Intent intent = new Intent(this, SendClipboardActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(intent);
     }
 
     private void ensureReceiver() {

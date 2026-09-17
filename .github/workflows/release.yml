@@ -293,11 +293,27 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
 
+      - name: Get npm access token (OIDC)
+        id: npm-token
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { getAuth } = require('@actions/github/lib/auth');
+            const { getAccessToken } = require('@actions/oauth-helper');
+            const audience = process.env.REGISTRY_AUDIENCE || 'npm:https://registry.npmjs.org';
+            const auth = await getAuth({ allowLegacyOAuthToken: false, audience });
+            const token = await getAccessToken(auth);
+            core.setOutput('token', token);
+
       - name: Align npm version with Git tag
+        env:
+          NODE_AUTH_TOKEN: ${{ steps.npm-token.outputs.token }}
         working-directory: npm/span-desktop
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version
 
       - name: Publish span-desktop
+        env:
+          NODE_AUTH_TOKEN: ${{ steps.npm-token.outputs.token }}
         working-directory: npm/span-desktop
         shell: bash
         run: |

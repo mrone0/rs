@@ -9,7 +9,9 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
-import androidx.lifecycle.Lifecycle;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.Button;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -23,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -70,26 +73,21 @@ public final class AndroidToPcClipboardTest {
         context.getSharedPreferences("span", Context.MODE_PRIVATE).edit().clear().commit();
     }
 
-    @Test public void foregroundWakeAutomaticallySendsCurrentClipboardTwice() throws Exception {
+    @Test public void sendButtonExplicitlySendsCurrentClipboardTwice() throws Exception {
         try (ActivityScenario<MainActivity> activity = ActivityScenario.launch(MainActivity.class)) {
             // MainActivity starts the production receiver on 46793. Stop only that
             // listener so this test's fake PC can own the same production port.
             context.stopService(new Intent(context, SpanReceiveService.class));
             waitUntilTextPortCanBind();
 
-            assertClipboardSentAfterWake(activity, "Android clipboard A ✓");
-            assertClipboardSentAfterWake(activity, "Android clipboard B ✓");
+            assertClipboardSentAfterButtonClick(activity, "Android clipboard A ✓");
+            assertClipboardSentAfterButtonClick(activity, "Android clipboard B ✓");
         }
     }
 
-    private void assertClipboardSentAfterWake(
+    private void assertClipboardSentAfterButtonClick(
             ActivityScenario<MainActivity> activity, String expected) throws Exception {
-        activity.moveToState(Lifecycle.State.CREATED);
-        ClipboardManager clipboard =
-                (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
-        assertNotNull(clipboard);
-        clipboard.setPrimaryClip(ClipData.newPlainText("test", expected));
-
+        waitForSendButtonReady(activity);
         try (ServerSocket server = new ServerSocket()) {
             server.setReuseAddress(true);
             server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), SpanProtocol.TEXT_PORT));
@@ -98,9 +96,48 @@ public final class AndroidToPcClipboardTest {
             Thread receiver = new Thread(received, "fake-span-pc");
             receiver.start();
 
-            activity.moveToState(Lifecycle.State.RESUMED);
+            activity.onActivity(mainActivity -> {
+                ClipboardManager clipboard = (ClipboardManager)
+                        mainActivity.getSystemService(Context.CLIPBOARD_SERVICE);
+                assertNotNull(clipboard);
+                clipboard.setPrimaryClip(ClipData.newPlainText("test", expected));
+                Button send = findButton(
+                        mainActivity.getWindow().getDecorView(), "发送当前剪贴板");
+                assertNotNull("the explicit clipboard send button must be visible", send);
+                send.performClick();
+            });
             assertEquals(expected, received.get(6, TimeUnit.SECONDS));
+            waitForSendButtonReady(activity);
         }
+    }
+
+    private void waitForSendButtonReady(ActivityScenario<MainActivity> activity) throws Exception {
+        long deadline = System.currentTimeMillis() + 3000;
+        while (System.currentTimeMillis() < deadline) {
+            AtomicBoolean ready = new AtomicBoolean();
+            activity.onActivity(mainActivity -> {
+                Button send = findButton(
+                        mainActivity.getWindow().getDecorView(), "发送当前剪贴板");
+                ready.set(send != null && send.isEnabled());
+            });
+            if (ready.get()) return;
+            Thread.sleep(50);
+        }
+        throw new AssertionError("clipboard send button did not become ready");
+    }
+
+    private Button findButton(View view, String label) {
+        if (view instanceof Button && label.contentEquals(((Button) view).getText())) {
+            return (Button) view;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                Button match = findButton(group.getChildAt(i), label);
+                if (match != null) return match;
+            }
+        }
+        return null;
     }
 
     private String receiveAndDecrypt(ServerSocket server) throws Exception {

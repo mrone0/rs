@@ -54,7 +54,6 @@ mod macos {
         fn NSApplicationLoad() -> BOOL;
     }
 
-
     #[link(name = "objc")]
     unsafe extern "C" {
         fn objc_getClass(name: *const c_char) -> Id;
@@ -70,6 +69,8 @@ mod macos {
     static STATUS_LABEL: OnceLock<usize> = OnceLock::new();
     static TRUSTED_SUMMARY_LABEL: OnceLock<usize> = OnceLock::new();
     static TRUSTED_POPUP: OnceLock<usize> = OnceLock::new();
+    static DISCOVER_BUTTON: OnceLock<usize> = OnceLock::new();
+    static REMOVE_BUTTON: OnceLock<usize> = OnceLock::new();
     static CONTROLLER_CLASS: OnceLock<usize> = OnceLock::new();
     static CONTROLLER_INSTANCE: OnceLock<usize> = OnceLock::new();
     static ACTION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -141,8 +142,8 @@ mod macos {
         let rect = Rect {
             origin: Point { x: 0.0, y: 0.0 },
             size: Size {
-                width: 520.0,
-                height: 360.0,
+                width: 540.0,
+                height: 440.0,
             },
         };
         let window = send_id_rect_integer_integer_bool(
@@ -158,134 +159,291 @@ mod macos {
         }
 
         send_void_id(window, sel("setTitle:")?, ns_string("Span"));
+        send_void_bool(window, sel("setReleasedWhenClosed:")?, 0);
+        send_void_size(
+            window,
+            sel("setMinSize:")?,
+            Size {
+                width: 540.0,
+                height: 440.0,
+            },
+        );
         send_void(window, sel("center")?);
         let content = send_id(window, sel("contentView")?);
-        let background = send_id(content, sel("window")?);
-        let _ = background;
 
-        add_label(
+        add_app_logo(
             content,
-            "SPAN",
             Rect {
-                origin: Point { x: 28.0, y: 305.0 },
+                origin: Point { x: 28.0, y: 370.0 },
                 size: Size {
-                    width: 450.0,
-                    height: 30.0,
+                    width: 38.0,
+                    height: 38.0,
                 },
             },
-            24.0,
+        )?;
+        add_label(
+            content,
+            "Span",
+            Rect {
+                origin: Point { x: 78.0, y: 382.0 },
+                size: Size {
+                    width: 160.0,
+                    height: 24.0,
+                },
+            },
+            18.0,
             true,
         )?;
-        add_label(
+        let running = add_label(
             content,
-            "在可信设备之间自动同步剪贴板",
+            "●  同步中",
             Rect {
-                origin: Point { x: 30.0, y: 280.0 },
+                origin: Point { x: 440.0, y: 383.0 },
                 size: Size {
-                    width: 450.0,
-                    height: 20.0,
-                },
-            },
-            13.0,
-            false,
-        )?;
-        add_label(
-            content,
-            &format!("本机：{}", local.name),
-            Rect {
-                origin: Point { x: 30.0, y: 250.0 },
-                size: Size {
-                    width: 450.0,
-                    height: 22.0,
-                },
-            },
-            13.0,
-            true,
-        )?;
-        let mut rows = format!("可信设备（{trusted_count}）\n");
-        for device in devices
-            .iter()
-            .filter(|d| d.trust_state == TrustState::Trusted)
-        {
-            rows.push_str(&format!(
-                "• {} · {}\n",
-                device.name,
-                platform_name(device.platform)
-            ));
-        }
-        if trusted_count == 0 {
-            rows.push_str("暂无设备，请点击“发现设备”进行配对。");
-        }
-        let trusted_summary = add_label(
-            content,
-            &rows,
-            Rect {
-                origin: Point { x: 30.0, y: 125.0 },
-                size: Size {
-                    width: 450.0,
-                    height: 105.0,
-                },
-            },
-            13.0,
-            false,
-        )?;
-        let _ = TRUSTED_SUMMARY_LABEL.set(trusted_summary as usize);
-
-        let status = add_label(
-            content,
-            "运行中 · 仅向可信设备同步剪贴板",
-            Rect {
-                origin: Point { x: 30.0, y: 92.0 },
-                size: Size {
-                    width: 450.0,
+                    width: 74.0,
                     height: 20.0,
                 },
             },
             11.0,
             false,
         )?;
+        set_label_color(running, "systemGreenColor")?;
+
+        add_label(
+            content,
+            if trusted_count == 0 {
+                "连接你的设备"
+            } else {
+                "设备已连接"
+            },
+            Rect {
+                origin: Point { x: 28.0, y: 326.0 },
+                size: Size {
+                    width: 484.0,
+                    height: 30.0,
+                },
+            },
+            22.0,
+            true,
+        )?;
+        let lead = add_label(
+            content,
+            if trusted_count == 0 {
+                "发现附近的 Span 设备，开始同步剪贴板"
+            } else {
+                "在任意设备复制，然后在另一台设备粘贴"
+            },
+            Rect {
+                origin: Point { x: 28.0, y: 300.0 },
+                size: Size {
+                    width: 484.0,
+                    height: 20.0,
+                },
+            },
+            12.0,
+            false,
+        )?;
+        set_label_color(lead, "secondaryLabelColor")?;
+
+        let local_card = add_card(
+            content,
+            Rect {
+                origin: Point { x: 28.0, y: 168.0 },
+                size: Size {
+                    width: 200.0,
+                    height: 112.0,
+                },
+            },
+        )?;
+        add_symbol(
+            local_card,
+            "desktopcomputer",
+            Rect {
+                origin: Point { x: 18.0, y: 58.0 },
+                size: Size {
+                    width: 32.0,
+                    height: 32.0,
+                },
+            },
+        )?;
+        let local_kind = add_label(
+            local_card,
+            "这台 Mac",
+            Rect {
+                origin: Point { x: 62.0, y: 72.0 },
+                size: Size {
+                    width: 118.0,
+                    height: 18.0,
+                },
+            },
+            11.0,
+            false,
+        )?;
+        set_label_color(local_kind, "secondaryLabelColor")?;
+        add_label(
+            local_card,
+            &local.name,
+            Rect {
+                origin: Point { x: 18.0, y: 24.0 },
+                size: Size {
+                    width: 164.0,
+                    height: 24.0,
+                },
+            },
+            14.0,
+            true,
+        )?;
+
+        let connection = add_label(
+            content,
+            "⇄",
+            Rect {
+                origin: Point { x: 239.0, y: 206.0 },
+                size: Size {
+                    width: 62.0,
+                    height: 34.0,
+                },
+            },
+            24.0,
+            false,
+        )?;
+        send_void_integer(connection, sel("setAlignment:")?, 1);
+        set_label_color(
+            connection,
+            if trusted_count == 0 {
+                "tertiaryLabelColor"
+            } else {
+                "systemBlueColor"
+            },
+        )?;
+
+        let remote_card = add_card(
+            content,
+            Rect {
+                origin: Point { x: 312.0, y: 168.0 },
+                size: Size {
+                    width: 200.0,
+                    height: 112.0,
+                },
+            },
+        )?;
+        add_symbol(
+            remote_card,
+            if trusted_count == 0 { "plus" } else { "iphone" },
+            Rect {
+                origin: Point { x: 18.0, y: 58.0 },
+                size: Size {
+                    width: 32.0,
+                    height: 32.0,
+                },
+            },
+        )?;
+        let remote_kind = add_label(
+            remote_card,
+            if trusted_count == 0 {
+                "等待连接"
+            } else {
+                "可信设备"
+            },
+            Rect {
+                origin: Point { x: 62.0, y: 72.0 },
+                size: Size {
+                    width: 118.0,
+                    height: 18.0,
+                },
+            },
+            11.0,
+            false,
+        )?;
+        set_label_color(remote_kind, "secondaryLabelColor")?;
+        let rows = trusted_device_summary(&devices);
+        let trusted_summary = add_label(
+            remote_card,
+            &rows,
+            Rect {
+                origin: Point { x: 18.0, y: 18.0 },
+                size: Size {
+                    width: 164.0,
+                    height: 38.0,
+                },
+            },
+            13.0,
+            true,
+        )?;
+        let _ = TRUSTED_SUMMARY_LABEL.set(trusted_summary as usize);
+
+        let status = add_label(
+            content,
+            if trusted_count == 0 {
+                "设备需要位于同一局域网"
+            } else {
+                "剪贴板正在自动同步"
+            },
+            Rect {
+                origin: Point { x: 28.0, y: 132.0 },
+                size: Size {
+                    width: 484.0,
+                    height: 20.0,
+                },
+            },
+            11.0,
+            false,
+        )?;
+        set_label_color(status, "secondaryLabelColor")?;
+        send_void_integer(status, sel("setAlignment:")?, 1);
         let _ = STATUS_LABEL.set(status as usize);
 
-        add_button(
+        let discover_button = add_button(
             content,
             controller,
-            "发现设备",
+            if trusted_count == 0 {
+                "添加设备…"
+            } else {
+                "添加另一台设备…"
+            },
             "spanDiscover:",
             1,
             Rect {
-                origin: Point { x: 30.0, y: 35.0 },
+                origin: Point { x: 176.0, y: 76.0 },
                 size: Size {
-                    width: 150.0,
+                    width: 188.0,
                     height: 34.0,
                 },
             },
         )?;
-        add_button(
-            content,
-            controller,
-            "移除设备",
-            "spanRemove:",
-            2,
-            Rect {
-                origin: Point { x: 195.0, y: 35.0 },
-                size: Size {
-                    width: 150.0,
-                    height: 34.0,
-                },
-            },
-        )?;
+        send_void_integer(discover_button, sel("setKeyEquivalentModifierMask:")?, 0);
+        send_void_id(discover_button, sel("setKeyEquivalent:")?, ns_string("\r"));
+        let _ = DISCOVER_BUTTON.set(discover_button as usize);
+
         let popup = add_trusted_popup(
             content,
             &devices,
             Rect {
-                origin: Point { x: 360.0, y: 35.0 },
+                origin: Point { x: 176.0, y: 34.0 },
                 size: Size {
-                    width: 130.0,
-                    height: 34.0,
+                    width: 128.0,
+                    height: 26.0,
                 },
             },
         )?;
         let _ = TRUSTED_POPUP.set(popup as usize);
+        let remove_button = add_button(
+            content,
+            controller,
+            "断开设备",
+            "spanRemove:",
+            2,
+            Rect {
+                origin: Point { x: 308.0, y: 34.0 },
+                size: Size {
+                    width: 86.0,
+                    height: 26.0,
+                },
+            },
+        )?;
+        send_void_integer(remove_button, sel("setBezelStyle:")?, 10);
+        let _ = REMOVE_BUTTON.set(remove_button as usize);
+        update_action_controls(trusted_count > 0);
         send_void_id(window, sel("makeKeyAndOrderFront:")?, app);
         send_void_bool(app, sel("activateIgnoringOtherApps:")?, 1);
         send_void(app, sel("run")?);
@@ -320,6 +478,82 @@ mod macos {
         Ok(label)
     }
 
+    unsafe fn add_card(parent: Id, frame: Rect) -> io::Result<Id> {
+        let card = send_id(class("NSBox")?, sel("new")?);
+        if card.is_null() {
+            return Err(io::Error::other("could not create device card"));
+        }
+        send_void_rect(card, sel("setFrame:")?, frame);
+        send_void_integer(card, sel("setBoxType:")?, 4);
+        send_void_integer(card, sel("setBorderType:")?, 0);
+        send_void_double(card, sel("setCornerRadius:")?, 14.0);
+        let fill = send_id(class("NSColor")?, sel("controlBackgroundColor")?);
+        send_void_id(card, sel("setFillColor:")?, fill);
+        send_void_id(parent, sel("addSubview:")?, card);
+        Ok(card)
+    }
+
+    unsafe fn add_symbol(parent: Id, name: &str, frame: Rect) -> io::Result<Id> {
+        let view = send_id(class("NSImageView")?, sel("new")?);
+        if view.is_null() {
+            return Err(io::Error::other("could not create symbol"));
+        }
+        send_void_rect(view, sel("setFrame:")?, frame);
+        send_void_integer(view, sel("setImageScaling:")?, 3);
+        let image = send_id_id_id(
+            class("NSImage")?,
+            sel("imageWithSystemSymbolName:accessibilityDescription:")?,
+            ns_string(name),
+            ns_string(name),
+        );
+        if !image.is_null() {
+            send_void_id(view, sel("setImage:")?, image);
+        }
+        send_void_id(parent, sel("addSubview:")?, view);
+        Ok(view)
+    }
+
+    unsafe fn set_label_color(label: Id, color_selector: &str) -> io::Result<()> {
+        let color = send_id(class("NSColor")?, sel(color_selector)?);
+        send_void_id(label, sel("setTextColor:")?, color);
+        Ok(())
+    }
+
+    fn trusted_device_summary(devices: &[span_core::DeviceInfo]) -> String {
+        let trusted: Vec<_> = devices
+            .iter()
+            .filter(|device| device.trust_state == TrustState::Trusted)
+            .collect();
+        if trusted.is_empty() {
+            return "添加一台设备".to_string();
+        }
+        let first = trusted[0];
+        if trusted.len() == 1 {
+            first.name.clone()
+        } else {
+            format!("{}  +{}", first.name, trusted.len() - 1)
+        }
+    }
+
+    unsafe fn add_app_logo(parent: Id, frame: Rect) -> io::Result<Id> {
+        let image_view = send_id(class("NSImageView")?, sel("new")?);
+        if image_view.is_null() {
+            return Err(io::Error::other("could not create app logo"));
+        }
+        send_void_rect(image_view, sel("setFrame:")?, frame);
+        send_void_integer(image_view, sel("setImageScaling:")?, 3);
+        let image = send_id_id(
+            class("NSImage")?,
+            sel("imageNamed:")?,
+            ns_string("NSApplicationIcon"),
+        );
+        if !image.is_null() {
+            send_void_id(image_view, sel("setImage:")?, image);
+        }
+        send_void_id(parent, sel("addSubview:")?, image_view);
+        Ok(image_view)
+    }
+
     unsafe fn add_trusted_popup(
         parent: Id,
         devices: &[span_core::DeviceInfo],
@@ -339,19 +573,11 @@ mod macos {
             .filter(|device| device.trust_state == TrustState::Trusted);
         let mut count = 0;
         for device in trusted {
-            send_void_id(
-                popup,
-                sel("addItemWithTitle:")?,
-                ns_string(&format!("移除 {}", device.name)),
-            );
+            send_void_id(popup, sel("addItemWithTitle:")?, ns_string(&device.name));
             count += 1;
         }
         if count == 0 {
-            send_void_id(
-                popup,
-                sel("addItemWithTitle:")?,
-                ns_string("暂无可信设备"),
-            );
+            send_void_id(popup, sel("addItemWithTitle:")?, ns_string("暂无可信设备"));
         }
         send_void_id(parent, sel("addSubview:")?, popup);
         Ok(popup)
@@ -420,8 +646,11 @@ mod macos {
     }
 
     unsafe extern "C" fn action_discover(_: Id, _: Sel, _: Id) {
-        if ACTION_IN_PROGRESS.swap(true, Ordering::AcqRel) { return; }
-        set_status("正在发现设备…");
+        if ACTION_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        set_actions_enabled(false);
+        set_status("正在搜索同一局域网中的设备…");
         std::thread::spawn(|| {
             let result = load_or_create_local_device()
                 .and_then(|local| crate::scan_devices(&local, Duration::from_millis(700)))
@@ -450,26 +679,42 @@ mod macos {
             }
             let store = TrustStore::load(trust_store_path()?)?;
             refresh_trusted_controls(&store)?;
-            let available: Vec<_> = store.devices().iter()
-                .filter(|device| device.trust_state != TrustState::Trusted).collect();
-            if available.is_empty() { return Ok("没有发现新设备。可信设备会自动同步。".into()); }
-            let names = available.iter()
+            let available: Vec<_> = store
+                .devices()
+                .iter()
+                .filter(|device| device.trust_state != TrustState::Trusted)
+                .collect();
+            if available.is_empty() {
+                return Ok("没有发现新设备。可信设备会自动同步。".into());
+            }
+            let names = available
+                .iter()
                 .map(|device| format!("{} ({})", device.name, platform_name(device.platform)))
-                .collect::<Vec<_>>().join("\n");
-            if !confirm_accept(&format!("发现新设备：\n\n{names}\n\n是否信任并开启剪贴板同步？")) {
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !confirm_accept(&format!(
+                "发现新设备：\n\n{names}\n\n是否信任并开启剪贴板同步？"
+            )) {
                 return Ok("已取消配对，未共享剪贴板内容。".into());
             }
             let mut store = TrustStore::load(trust_store_path()?)?;
             let mut accepted = 0;
-            for device in &available { if store.trust_existing(&device.id)? { accepted += 1; } }
+            for device in &available {
+                if store.trust_existing(&device.id)? {
+                    accepted += 1;
+                }
+            }
             refresh_trusted_controls(&store)?;
             Ok(format!("已信任 {} 台设备，剪贴板同步已开启。", accepted))
         })();
         set_status(&result.unwrap_or_else(|error| format!("操作失败：{error}")));
         ACTION_IN_PROGRESS.store(false, Ordering::Release);
+        set_actions_enabled(true);
     }
     unsafe extern "C" fn action_remove(_: Id, _: Sel, _: Id) {
-        if ACTION_IN_PROGRESS.swap(true, Ordering::AcqRel) { return; }
+        if ACTION_IN_PROGRESS.swap(true, Ordering::AcqRel) {
+            return;
+        }
         let result = (|| -> io::Result<(span_core::DeviceId, String)> {
             let store = TrustStore::load(trust_store_path()?)?;
             let trusted = store.trusted_devices();
@@ -485,18 +730,24 @@ mod macos {
         let Ok((id, name)) = result else {
             set_status("暂无可移除的可信设备。");
             ACTION_IN_PROGRESS.store(false, Ordering::Release);
+            set_actions_enabled(true);
             return;
         };
         if !confirm_accept(&format!("是否移除可信设备“{name}”？")) {
             set_status("已取消移除。");
             ACTION_IN_PROGRESS.store(false, Ordering::Release);
+            set_actions_enabled(true);
             return;
         }
+        set_actions_enabled(false);
         set_status("正在移除设备…");
         std::thread::spawn(move || {
             let message = trust_store_path()
                 .and_then(TrustStore::load)
-                .and_then(|mut store| { store.revoke(&id)?; Ok(format!("已移除 {name}。")) })
+                .and_then(|mut store| {
+                    store.revoke(&id)?;
+                    Ok(format!("已移除 {name}。"))
+                })
                 .unwrap_or_else(|error| format!("操作失败：{error}"));
             let Some(controller) = CONTROLLER_INSTANCE.get().copied() else {
                 ACTION_IN_PROGRESS.store(false, Ordering::Release);
@@ -521,23 +772,14 @@ mod macos {
         let value = ns_string_to_string(message).unwrap_or_else(|| "操作完成。".into());
         set_status(&value);
         ACTION_IN_PROGRESS.store(false, Ordering::Release);
+        set_actions_enabled(true);
     }
 
     unsafe fn refresh_trusted_controls(store: &TrustStore) -> io::Result<()> {
         let trusted = store.trusted_devices();
 
         if let Some(pointer) = TRUSTED_SUMMARY_LABEL.get() {
-            let mut rows = format!("可信设备（{}）\n", trusted.len());
-            for device in &trusted {
-                rows.push_str(&format!(
-                    "• {} · {}\n",
-                    device.name,
-                    platform_name(device.platform)
-                ));
-            }
-            if trusted.is_empty() {
-                rows.push_str("暂无设备，请点击“发现设备”进行配对。");
-            }
+            let rows = trusted_device_summary(store.devices());
             send_void_id(*pointer as Id, sel("setStringValue:")?, ns_string(&rows));
         }
 
@@ -545,23 +787,56 @@ mod macos {
             let popup = *pointer as Id;
             send_void(popup, sel("removeAllItems")?);
             for device in &trusted {
-                send_void_id(
-                    popup,
-                    sel("addItemWithTitle:")?,
-                    ns_string(&format!("移除 {}", device.name)),
-                );
+                send_void_id(popup, sel("addItemWithTitle:")?, ns_string(&device.name));
             }
             if trusted.is_empty() {
-                send_void_id(
-                    popup,
-                    sel("addItemWithTitle:")?,
-                    ns_string("暂无可信设备"),
-                );
+                send_void_id(popup, sel("addItemWithTitle:")?, ns_string("暂无可信设备"));
             }
             send_void_integer(popup, sel("selectItemAtIndex:")?, 0);
         }
 
+        update_action_controls(!trusted.is_empty());
         Ok(())
+    }
+
+    unsafe fn update_action_controls(has_trusted_devices: bool) {
+        if let Some(pointer) = REMOVE_BUTTON.get() {
+            send_void_bool(
+                *pointer as Id,
+                sel("setEnabled:").unwrap(),
+                has_trusted_devices as BOOL,
+            );
+        }
+        if let Some(pointer) = TRUSTED_POPUP.get() {
+            send_void_bool(
+                *pointer as Id,
+                sel("setEnabled:").unwrap(),
+                has_trusted_devices as BOOL,
+            );
+        }
+    }
+
+    unsafe fn set_actions_enabled(enabled: bool) {
+        if let Some(pointer) = DISCOVER_BUTTON.get() {
+            send_void_bool(*pointer as Id, sel("setEnabled:").unwrap(), enabled as BOOL);
+        }
+        if let Ok(store) = trust_store_path().and_then(TrustStore::load) {
+            let has_trusted = !store.trusted_devices().is_empty();
+            if let Some(pointer) = REMOVE_BUTTON.get() {
+                send_void_bool(
+                    *pointer as Id,
+                    sel("setEnabled:").unwrap(),
+                    (enabled && has_trusted) as BOOL,
+                );
+            }
+            if let Some(pointer) = TRUSTED_POPUP.get() {
+                send_void_bool(
+                    *pointer as Id,
+                    sel("setEnabled:").unwrap(),
+                    (enabled && has_trusted) as BOOL,
+                );
+            }
+        }
     }
 
     unsafe extern "C" fn application_should_terminate_after_last_window_closed(
@@ -613,15 +888,25 @@ mod macos {
             sel("setInformativeText:").unwrap(),
             ns_string(message),
         );
-        send_id_id(alert, sel("addButtonWithTitle:").unwrap(), ns_string("知道了"));
+        send_id_id(
+            alert,
+            sel("addButtonWithTitle:").unwrap(),
+            ns_string("知道了"),
+        );
         send_integer(alert, sel("runModal").unwrap());
     }
 
     fn ns_string_to_string(value: Id) -> Option<String> {
         unsafe {
             let pointer = send_id(value, sel("UTF8String").ok()?) as *const c_char;
-            if pointer.is_null() { return None; }
-            Some(std::ffi::CStr::from_ptr(pointer).to_string_lossy().into_owned())
+            if pointer.is_null() {
+                return None;
+            }
+            Some(
+                std::ffi::CStr::from_ptr(pointer)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
         }
     }
 
@@ -667,6 +952,11 @@ mod macos {
         let f: unsafe extern "C" fn(Id, Sel, Id) -> Id =
             std::mem::transmute(objc_msgSend as *const ());
         f(receiver, selector, arg)
+    }
+    unsafe fn send_id_id_id(receiver: Id, selector: Sel, a: Id, b: Id) -> Id {
+        let f: unsafe extern "C" fn(Id, Sel, Id, Id) -> Id =
+            std::mem::transmute(objc_msgSend as *const ());
+        f(receiver, selector, a, b)
     }
     unsafe fn send_id_id_id_id(receiver: Id, selector: Sel, a: Id, b: Id, c: Sel) -> Id {
         let f: unsafe extern "C" fn(Id, Sel, Id, Id, Sel) -> Id =
@@ -715,11 +1005,20 @@ mod macos {
         f(receiver, selector, arg1, arg2, arg3)
     }
     unsafe fn send_u64(receiver: Id, selector: Sel) -> u64 {
-        let f: unsafe extern "C" fn(Id, Sel) -> u64 = std::mem::transmute(objc_msgSend as *const ());
+        let f: unsafe extern "C" fn(Id, Sel) -> u64 =
+            std::mem::transmute(objc_msgSend as *const ());
         f(receiver, selector)
     }
     unsafe fn send_void_rect(receiver: Id, selector: Sel, arg: Rect) {
         let f: unsafe extern "C" fn(Id, Sel, Rect) = std::mem::transmute(objc_msgSend as *const ());
+        f(receiver, selector, arg)
+    }
+    unsafe fn send_void_size(receiver: Id, selector: Sel, arg: Size) {
+        let f: unsafe extern "C" fn(Id, Sel, Size) = std::mem::transmute(objc_msgSend as *const ());
+        f(receiver, selector, arg)
+    }
+    unsafe fn send_void_double(receiver: Id, selector: Sel, arg: f64) {
+        let f: unsafe extern "C" fn(Id, Sel, f64) = std::mem::transmute(objc_msgSend as *const ());
         f(receiver, selector, arg)
     }
     unsafe fn send_void_integer(receiver: Id, selector: Sel, arg: NSInteger) {
@@ -754,9 +1053,8 @@ mod windows {
         DispatchMessageW, GetMessageW, LB_ADDSTRING, LB_GETCURSEL, LB_RESETCONTENT, LBS_NOTIFY,
         MB_ICONERROR, MB_ICONQUESTION, MB_OK, MB_YESNO, MSG, MessageBoxW, PostMessageW,
         PostQuitMessage, RegisterClassW, SW_SHOW, SendMessageW, SetWindowTextW, ShowWindow,
-        TranslateMessage, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSW, WS_BORDER, WS_CHILD,
-        WS_OVERLAPPEDWINDOW,
-        WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+        TranslateMessage, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSW, WS_BORDER,
+        WS_CHILD, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
     };
 
     const ID_DISCOVER: u16 = 1001;
@@ -932,7 +1230,17 @@ mod windows {
         let _ = TRUSTED_LIST.set(list as usize);
         refresh_trusted_list();
 
-        let status = add_control(hwnd, "STATIC", "运行中 · 仅向可信设备同步剪贴板", 24, 282, 500, 32, 0, 0)?;
+        let status = add_control(
+            hwnd,
+            "STATIC",
+            "运行中 · 仅向可信设备同步剪贴板",
+            24,
+            282,
+            500,
+            32,
+            0,
+            0,
+        )?;
         let _ = STATUS.set(status as usize);
         button(hwnd, "发现设备", ID_DISCOVER, 24, 326, 140, 34)?;
         button(hwnd, "移除选中设备", ID_REMOVE, 180, 326, 140, 34)?;
@@ -1059,9 +1367,7 @@ mod windows {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        let prompt = format!(
-            "发现新设备：\r\n\r\n{names}\r\n\r\n是否信任并开启剪贴板同步？"
-        );
+        let prompt = format!("发现新设备：\r\n\r\n{names}\r\n\r\n是否信任并开启剪贴板同步？");
         if unsafe { ask_yes_no(&prompt) } {
             let mut store =
                 crate::trust_store::TrustStore::load(crate::config::trust_store_path()?)?;

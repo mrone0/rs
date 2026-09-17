@@ -202,10 +202,6 @@ fn spawn_discovery_listener(
                     let mut store = TrustStore::load(&store_path)?;
                     let mut info = packet.into_device_info();
                     info.endpoint = Some(endpoint.clone());
-                    let known_before = store.devices().iter().any(|device| {
-                        device.id == info.id
-                            || (device.public_key.is_some() && device.public_key == info.public_key)
-                    });
                     let trusted_before = store.trusted_devices().iter().any(|device| {
                         device.id == info.id
                             || (device.public_key.is_some() && device.public_key == info.public_key)
@@ -219,7 +215,7 @@ fn spawn_discovery_listener(
                         )?
                     {
                         println!("updated endpoint for {}: {endpoint}", info.name);
-                    } else if !known_before && changed {
+                    } else if changed && store.mark_pairing_prompted(&info)? {
                         println!("discovered device: {} ({})", info.name, info.id);
                         notify_gui_pairing_request(&info);
                     }

@@ -101,6 +101,7 @@ jobs:
           mkdir -p dist/Span.app/Contents/MacOS dist/Span.app/Contents/Resources
           cp target/${{ matrix.target }}/release/span dist/Span.app/Contents/MacOS/span
           cp target/${{ matrix.target }}/release/span-gui dist/Span.app/Contents/MacOS/span-gui
+          cp assets/Span.icns dist/Span.app/Contents/Resources/Span.icns
           VERSION="${GITHUB_REF_NAME#v}"
           APP_VERSION="${VERSION%%-*}"
           APP_BUILD="${GITHUB_RUN_NUMBER}"
@@ -111,6 +112,7 @@ jobs:
           <dict>
             <key>CFBundleDisplayName</key><string>Span</string>
             <key>CFBundleExecutable</key><string>span-gui</string>
+            <key>CFBundleIconFile</key><string>Span</string>
             <key>CFBundleIdentifier</key><string>com.span.clipboard</string>
             <key>CFBundleName</key><string>Span</string>
             <key>CFBundlePackageType</key><string>APPL</string>

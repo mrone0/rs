@@ -157,6 +157,32 @@ impl TrustStore {
         Ok(changed)
     }
 
+    /// Persist that the automatic pairing prompt has been shown. A device may
+    /// announce itself repeatedly, or recreate its local identity after an app
+    /// reinstall; neither should keep interrupting the user. Manual discovery
+    /// remains available for every untrusted identity.
+    pub fn mark_pairing_prompted(&mut self, discovered: &DeviceInfo) -> io::Result<bool> {
+        let already_prompted = self.devices.iter().any(|device| {
+            device.trust_state == TrustState::Pending
+                && device.name == discovered.name
+                && device.platform == discovered.platform
+        });
+        if already_prompted {
+            return Ok(false);
+        }
+
+        let Some(index) = find_existing_device_index(&self.devices, discovered) else {
+            return Ok(false);
+        };
+        if self.devices[index].trust_state != TrustState::Discovered {
+            return Ok(false);
+        }
+
+        self.devices[index].trust_state = TrustState::Pending;
+        self.save()?;
+        Ok(true)
+    }
+
     pub fn revoke(&mut self, id: &DeviceId) -> io::Result<bool> {
         let mut changed = false;
         for device in &mut self.devices {
@@ -637,6 +663,48 @@ mod tests {
                 .iter()
                 .any(|device| device.id.as_str() == "new-phone"
                     && device.trust_state == TrustState::Discovered)
+        );
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn pairing_prompt_is_persistently_limited_to_once_per_advertised_device() {
+        let path = temp_file("pairing-prompt-once.tsv");
+        let _ = fs::remove_file(&path);
+
+        let mut store = TrustStore::load(&path).unwrap();
+        let first = DeviceInfo {
+            id: DeviceId::new("phone-1").unwrap(),
+            name: "Phone".to_string(),
+            platform: Platform::Android,
+            trust_state: TrustState::Discovered,
+            endpoint: Some("192.168.1.10".to_string()),
+            public_key: Some("aa".repeat(32)),
+        };
+        store.record_discovered(first.clone()).unwrap();
+        assert!(store.mark_pairing_prompted(&first).unwrap());
+        assert!(!store.mark_pairing_prompted(&first).unwrap());
+
+        // Reinstalling the peer can change both id and key. It is still the
+        // same advertised device to the user and must not trigger another
+        // unsolicited system prompt.
+        let replaced_identity = DeviceInfo {
+            id: DeviceId::new("phone-2").unwrap(),
+            public_key: Some("bb".repeat(32)),
+            ..first
+        };
+        store.record_discovered(replaced_identity.clone()).unwrap();
+        assert!(!store.mark_pairing_prompted(&replaced_identity).unwrap());
+
+        let reloaded = TrustStore::load(&path).unwrap();
+        assert_eq!(
+            reloaded
+                .devices()
+                .iter()
+                .filter(|device| device.trust_state == TrustState::Pending)
+                .count(),
+            1
         );
 
         let _ = fs::remove_file(&path);

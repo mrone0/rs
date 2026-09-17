@@ -66,6 +66,7 @@ mod macos {
         fn objc_autoreleasePoolPop(pool: *mut c_void);
     }
 
+    static MAIN_WINDOW: OnceLock<usize> = OnceLock::new();
     static STATUS_LABEL: OnceLock<usize> = OnceLock::new();
     static TRUSTED_SUMMARY_LABEL: OnceLock<usize> = OnceLock::new();
     static TRUSTED_POPUP: OnceLock<usize> = OnceLock::new();
@@ -138,6 +139,7 @@ mod macos {
         }
         let _ = CONTROLLER_INSTANCE.set(controller as usize);
         send_void_id(app, sel("setDelegate:")?, controller);
+        install_application_menu(app, controller)?;
 
         let rect = Rect {
             origin: Point { x: 0.0, y: 0.0 },
@@ -157,6 +159,7 @@ mod macos {
         if window.is_null() {
             return Err(io::Error::other("could not create Span window"));
         }
+        let _ = MAIN_WINDOW.set(window as usize);
 
         send_void_id(window, sel("setTitle:")?, ns_string("Span"));
         send_void_bool(window, sel("setReleasedWhenClosed:")?, 0);
@@ -450,6 +453,99 @@ mod macos {
         Ok(())
     }
 
+    unsafe fn install_application_menu(app: Id, controller: Id) -> io::Result<()> {
+        let main_menu = send_id(class("NSMenu")?, sel("new")?);
+        let app_root = send_id(class("NSMenuItem")?, sel("new")?);
+        send_void_id(app_root, sel("setTitle:")?, ns_string("Span"));
+        send_void_id(main_menu, sel("addItem:")?, app_root);
+
+        let app_menu = send_id_id(
+            send_id(class("NSMenu")?, sel("alloc")?),
+            sel("initWithTitle:")?,
+            ns_string("Span"),
+        );
+        add_menu_item(app_menu, "关于 Span", "orderFrontStandardAboutPanel:", "")?;
+        send_void_id(
+            app_menu,
+            sel("addItem:")?,
+            send_id(class("NSMenuItem")?, sel("separatorItem")?),
+        );
+        add_menu_item(app_menu, "隐藏 Span", "hide:", "h")?;
+        add_menu_item(app_menu, "隐藏其他应用", "hideOtherApplications:", "h")?;
+        send_void_id(
+            app_menu,
+            sel("addItem:")?,
+            send_id(class("NSMenuItem")?, sel("separatorItem")?),
+        );
+        add_menu_item(app_menu, "退出 Span", "terminate:", "q")?;
+        send_void_id(app_root, sel("setSubmenu:")?, app_menu);
+
+        let edit_root = send_id(class("NSMenuItem")?, sel("new")?);
+        send_void_id(edit_root, sel("setTitle:")?, ns_string("编辑"));
+        send_void_id(main_menu, sel("addItem:")?, edit_root);
+        let edit_menu = send_id_id(
+            send_id(class("NSMenu")?, sel("alloc")?),
+            sel("initWithTitle:")?,
+            ns_string("编辑"),
+        );
+        add_menu_item(edit_menu, "撤销", "undo:", "z")?;
+        add_menu_item(edit_menu, "重做", "redo:", "Z")?;
+        send_void_id(
+            edit_menu,
+            sel("addItem:")?,
+            send_id(class("NSMenuItem")?, sel("separatorItem")?),
+        );
+        add_menu_item(edit_menu, "剪切", "cut:", "x")?;
+        add_menu_item(edit_menu, "复制", "copy:", "c")?;
+        add_menu_item(edit_menu, "粘贴", "paste:", "v")?;
+        add_menu_item(edit_menu, "全选", "selectAll:", "a")?;
+        send_void_id(edit_root, sel("setSubmenu:")?, edit_menu);
+
+        let window_root = send_id(class("NSMenuItem")?, sel("new")?);
+        send_void_id(window_root, sel("setTitle:")?, ns_string("窗口"));
+        send_void_id(main_menu, sel("addItem:")?, window_root);
+        let window_menu = send_id_id(
+            send_id(class("NSMenu")?, sel("alloc")?),
+            sel("initWithTitle:")?,
+            ns_string("窗口"),
+        );
+        add_menu_item(window_menu, "最小化", "performMiniaturize:", "m")?;
+        let show_item = add_menu_item(window_menu, "显示 Span", "spanShowWindow:", "1")?;
+        send_void_id(show_item, sel("setTarget:")?, controller);
+        send_void_id(window_root, sel("setSubmenu:")?, window_menu);
+        send_void_id(app, sel("setWindowsMenu:")?, window_menu);
+
+        let help_root = send_id(class("NSMenuItem")?, sel("new")?);
+        send_void_id(help_root, sel("setTitle:")?, ns_string("帮助"));
+        send_void_id(main_menu, sel("addItem:")?, help_root);
+        let help_menu = send_id_id(
+            send_id(class("NSMenu")?, sel("alloc")?),
+            sel("initWithTitle:")?,
+            ns_string("帮助"),
+        );
+        let help_item = add_menu_item(help_menu, "Span 使用说明", "spanShowHelp:", "?")?;
+        send_void_id(help_item, sel("setTarget:")?, controller);
+        send_void_id(help_root, sel("setSubmenu:")?, help_menu);
+        send_void_id(app, sel("setHelpMenu:")?, help_menu);
+        send_void_id(app, sel("setMainMenu:")?, main_menu);
+        Ok(())
+    }
+
+    unsafe fn add_menu_item(menu: Id, title: &str, action: &str, key: &str) -> io::Result<Id> {
+        let item = send_id_id_sel_id(
+            send_id(class("NSMenuItem")?, sel("alloc")?),
+            sel("initWithTitle:action:keyEquivalent:")?,
+            ns_string(title),
+            sel(action)?,
+            ns_string(key),
+        );
+        if item.is_null() {
+            return Err(io::Error::other("could not create application menu item"));
+        }
+        send_void_id(menu, sel("addItem:")?, item);
+        Ok(item)
+    }
+
     unsafe fn add_label(
         parent: Id,
         value: &str,
@@ -623,6 +719,8 @@ mod macos {
             ("spanRemove:", action_remove as IMP),
             ("spanCompleteDiscover:", complete_discover as IMP),
             ("spanCompleteRemove:", complete_remove as IMP),
+            ("spanShowWindow:", action_show_window as IMP),
+            ("spanShowHelp:", action_show_help as IMP),
         ] {
             let selector = sel(name)?;
             if class_addMethod(cls, selector, callback, type_encoding.as_ptr()) == 0 {
@@ -639,6 +737,17 @@ mod macos {
         ) == 0
         {
             return Err(io::Error::other("could not add GUI close action"));
+        }
+        let reopen_encoding = CString::new("c@:@c").unwrap();
+        if class_addMethod(
+            cls,
+            sel("applicationShouldHandleReopen:hasVisibleWindows:")?,
+            application_should_handle_reopen as unsafe extern "C" fn(Id, Sel, Id, BOOL) -> BOOL
+                as IMP,
+            reopen_encoding.as_ptr(),
+        ) == 0
+        {
+            return Err(io::Error::other("could not add application reopen action"));
         }
         objc_registerClassPair(cls);
         let _ = CONTROLLER_CLASS.set(cls as usize);
@@ -839,12 +948,45 @@ mod macos {
         }
     }
 
+    unsafe extern "C" fn action_show_window(_: Id, _: Sel, _: Id) {
+        show_main_window();
+    }
+
+    unsafe extern "C" fn action_show_help(_: Id, _: Sel, _: Id) {
+        show_alert(
+            "Span 会在可信设备之间自动同步文本剪贴板。\n\n添加设备：打开 Span，点击“添加设备”。\n后台同步：关闭此窗口不会停止同步。\n彻底退出：在 Span 菜单中选择“退出 Span”。",
+        );
+    }
+
+    unsafe extern "C" fn application_should_handle_reopen(_: Id, _: Sel, _: Id, _: BOOL) -> BOOL {
+        show_main_window();
+        1
+    }
+
+    unsafe fn show_main_window() {
+        if let Some(pointer) = MAIN_WINDOW.get() {
+            let window = *pointer as Id;
+            send_void_id(
+                window,
+                sel("makeKeyAndOrderFront:").unwrap(),
+                std::ptr::null_mut(),
+            );
+            if let Ok(app) = class("NSApplication")
+                .and_then(|class| Ok(send_id(class, sel("sharedApplication")?)))
+            {
+                send_void_bool(app, sel("activateIgnoringOtherApps:").unwrap(), 1);
+            }
+        }
+    }
+
     unsafe extern "C" fn application_should_terminate_after_last_window_closed(
         _: Id,
         _: Sel,
         _: Id,
     ) -> BOOL {
-        1
+        // Closing the manager window is not the same as quitting the app. The
+        // daemon keeps syncing, and clicking the Dock icon restores the window.
+        0
     }
 
     unsafe fn confirm_accept(message: &str) -> bool {
@@ -957,6 +1099,11 @@ mod macos {
         let f: unsafe extern "C" fn(Id, Sel, Id, Id) -> Id =
             std::mem::transmute(objc_msgSend as *const ());
         f(receiver, selector, a, b)
+    }
+    unsafe fn send_id_id_sel_id(receiver: Id, selector: Sel, a: Id, b: Sel, c: Id) -> Id {
+        let f: unsafe extern "C" fn(Id, Sel, Id, Sel, Id) -> Id =
+            std::mem::transmute(objc_msgSend as *const ());
+        f(receiver, selector, a, b, c)
     }
     unsafe fn send_id_id_id_id(receiver: Id, selector: Sel, a: Id, b: Id, c: Sel) -> Id {
         let f: unsafe extern "C" fn(Id, Sel, Id, Id, Sel) -> Id =

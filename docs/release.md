@@ -6,8 +6,8 @@ PC 端不要求用户本地构建，直接用 GitHub Actions 产物。当前第�
 
 `.github/workflows/release.yml` 会构建：
 
-- `span-macos-arm64.tar.gz`：只包含 `Span.app`
-- `span-macos-x64.tar.gz`：只包含 `Span.app`
+- `span-macos-arm64.dmg` / `span-macos-x64.dmg`：标准 macOS 安装镜像，可将 `Span.app` 拖入 Applications
+- `span-macos-arm64.tar.gz` / `span-macos-x64.tar.gz`：便携版，只包含 `Span.app`
 - `span-windows-x64.zip`：只包含 `span.exe` 和 `span-gui.exe`
 - `span-linux-x64.tar.gz`：只包含 `span` 和 `span-gui`；Linux 当前 GUI 会提示暂不支持
 

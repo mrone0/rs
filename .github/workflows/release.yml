@@ -113,9 +113,15 @@ jobs:
             <key>CFBundleDisplayName</key><string>Span</string>
             <key>CFBundleExecutable</key><string>span-gui</string>
             <key>CFBundleIconFile</key><string>Span</string>
+            <key>CFBundleIconName</key><string>Span</string>
             <key>CFBundleIdentifier</key><string>com.span.clipboard</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
             <key>CFBundleName</key><string>Span</string>
             <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleDevelopmentRegion</key><string>zh_CN</string>
+            <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+            <key>LSMultipleInstancesProhibited</key><true/>
+            <key>NSHighResolutionCapable</key><true/>
             <key>CFBundleShortVersionString</key><string>$APP_VERSION</string>
             <key>CFBundleVersion</key><string>$APP_BUILD</string>
             <key>LSMinimumSystemVersion</key><string>11.0</string>
@@ -142,9 +148,17 @@ jobs:
           xcrun stapler staple dist/Span.app
 
 
-      - name: Pack macOS artifact
+      - name: Pack macOS artifacts
         if: runner.os == 'macOS'
-        run: tar -czf dist/${{ matrix.archive }} -C dist Span.app
+        run: |
+          tar -czf dist/${{ matrix.archive }} -C dist Span.app
+          DMG_NAME="${{ matrix.archive }}"
+          DMG_NAME="${DMG_NAME%.tar.gz}.dmg"
+          mkdir -p dist/dmg
+          cp -R dist/Span.app dist/dmg/Span.app
+          ln -s /Applications dist/dmg/Applications
+          hdiutil create -volname "Span" -srcfolder dist/dmg -ov -format UDZO "dist/$DMG_NAME"
+          rm -rf dist/dmg
 
       - name: Stage Linux minimal artifact
         if: runner.os == 'Linux'
@@ -169,7 +183,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.name }}
-          path: dist/${{ matrix.archive }}
+          path: |
+            dist/${{ matrix.archive }}
+            dist/*.dmg
 
   android-apk:
     name: Build android-apk

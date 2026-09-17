@@ -92,12 +92,20 @@ public final class SpanKeepAliveService extends AccessibilityService {
         sendWorker.execute(() -> {
             String message;
             try {
-                int sent = SpanClipboardSync.sendCurrentClipboard(this);
-                message = sent > 0
-                        ? "已发送到 " + sent + " 台设备"
-                        : "没有可信设备或剪贴板为空";
+                boolean trusted = false;
+                for (SpanDevice device : new SpanStore(this).loadDevices()) {
+                    if (device.trusted) { trusted = true; break; }
+                }
+                if (!trusted) {
+                    message = "尚未连接可信设备，请先完成配对";
+                } else {
+                    int sent = SpanClipboardSync.sendCurrentClipboard(this);
+                    message = sent > 0
+                            ? "已发送到 " + sent + " 台设备"
+                            : "发送已在处理中，或当前内容不是可发送的文本";
+                }
             } catch (SecurityException error) {
-                message = "系统不允许后台读取剪贴板，请使用分享菜单发送";
+                message = "无法从后台读取剪贴板；请用系统分享菜单发送文本";
             } catch (Exception error) {
                 message = "发送失败，请检查电脑是否在线";
             } finally {

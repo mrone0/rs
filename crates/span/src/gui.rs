@@ -177,10 +177,10 @@ mod macos {
         add_app_logo(
             content,
             Rect {
-                origin: Point { x: 28.0, y: 370.0 },
+                origin: Point { x: 28.0, y: 382.0 },
                 size: Size {
-                    width: 38.0,
-                    height: 38.0,
+                    width: 24.0,
+                    height: 24.0,
                 },
             },
         )?;
@@ -188,7 +188,7 @@ mod macos {
             content,
             "Span",
             Rect {
-                origin: Point { x: 78.0, y: 382.0 },
+                origin: Point { x: 62.0, y: 382.0 },
                 size: Size {
                     width: 160.0,
                     height: 24.0,

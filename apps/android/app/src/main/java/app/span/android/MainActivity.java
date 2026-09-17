@@ -160,11 +160,11 @@ public final class MainActivity extends Activity {
         ImageView logo = new ImageView(this);
         logo.setImageResource(R.drawable.ic_span);
         logo.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        header.addView(logo, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        header.addView(logo, new LinearLayout.LayoutParams(dp(32), dp(32)));
 
         LinearLayout copy = column();
         copy.setPadding(dp(12), 0, 0, 0);
-        copy.addView(text("Span", 22, TEXT, Typeface.BOLD));
+        copy.addView(text("Span", 18, TEXT, Typeface.BOLD));
         copy.addView(text("跨设备剪贴板", 12, TEXT_MUTED, Typeface.NORMAL));
         header.addView(copy, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
 

@@ -83,6 +83,9 @@ public final class AndroidToPcClipboardTest {
 
             assertClipboardSentAfterButtonClick(activity, "Android clipboard A ✓");
             assertClipboardSentAfterButtonClick(activity, "Android clipboard B ✓");
+            // Explicit user sends must not be discarded by the automatic echo
+            // or duplicate window, even when the clipboard has not changed.
+            assertClipboardSentAfterButtonClick(activity, "Android clipboard B ✓");
         }
     }
 

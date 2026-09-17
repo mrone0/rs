@@ -4,16 +4,13 @@ import android.accessibilityservice.AccessibilityButtonController;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Context;
+import android.content.Intent;
 import android.os.Handler;
 import android.os.Looper;
 import android.view.accessibility.AccessibilityEvent;
 import java.lang.ref.WeakReference;
 import android.view.accessibility.AccessibilityManager;
-import android.widget.Toast;
 import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Optional system-bound watchdog for vendors that kill normal foreground services.
@@ -28,14 +25,12 @@ public final class SpanKeepAliveService extends AccessibilityService {
     private static final long EVENT_RETRY_DEBOUNCE_MILLIS = 500;
     private static WeakReference<SpanKeepAliveService> activeService = new WeakReference<>(null);
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final ExecutorService sendWorker = Executors.newSingleThreadExecutor();
-    private final AtomicBoolean sendInProgress = new AtomicBoolean();
     private long lastEventRetryMillis;
     private AccessibilityButtonController accessibilityButtonController;
     private final AccessibilityButtonController.AccessibilityButtonCallback accessibilityButtonCallback =
             new AccessibilityButtonController.AccessibilityButtonCallback() {
                 @Override public void onClicked(AccessibilityButtonController controller) {
-                    sendClipboardWithoutOpeningApp();
+                    launchClipboardSend();
                 }
             };
     private final Runnable heartbeat = new Runnable() {
@@ -76,7 +71,6 @@ public final class SpanKeepAliveService extends AccessibilityService {
 
     @Override public void onDestroy() {
         handler.removeCallbacks(heartbeat);
-        sendWorker.shutdownNow();
         if (accessibilityButtonController != null) {
             accessibilityButtonController.unregisterAccessibilityButtonCallback(
                     accessibilityButtonCallback);
@@ -87,34 +81,12 @@ public final class SpanKeepAliveService extends AccessibilityService {
         super.onDestroy();
     }
 
-    private void sendClipboardWithoutOpeningApp() {
-        if (!sendInProgress.compareAndSet(false, true)) return;
-        sendWorker.execute(() -> {
-            String message;
-            try {
-                boolean trusted = false;
-                for (SpanDevice device : new SpanStore(this).loadDevices()) {
-                    if (device.trusted) { trusted = true; break; }
-                }
-                if (!trusted) {
-                    message = "尚未连接可信设备，请先完成配对";
-                } else {
-                    int sent = SpanClipboardSync.sendCurrentClipboard(this);
-                    message = sent > 0
-                            ? "已发送到 " + sent + " 台设备"
-                            : "发送已在处理中，或当前内容不是可发送的文本";
-                }
-            } catch (SecurityException error) {
-                message = "无法从后台读取剪贴板；请用系统分享菜单发送文本";
-            } catch (Exception error) {
-                message = "发送失败，请检查电脑是否在线";
-            } finally {
-                sendInProgress.set(false);
-            }
-            String result = message;
-            handler.post(() -> Toast.makeText(
-                    SpanKeepAliveService.this, result, Toast.LENGTH_SHORT).show());
-        });
+    private void launchClipboardSend() {
+        Intent intent = new Intent(this, SendClipboardActivity.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TOP
+                | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(intent);
     }
 
     private void ensureReceiver() {

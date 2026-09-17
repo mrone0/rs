@@ -75,6 +75,8 @@ mod macos {
     static CONTROLLER_CLASS: OnceLock<usize> = OnceLock::new();
     static CONTROLLER_INSTANCE: OnceLock<usize> = OnceLock::new();
     static ACTION_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+    static SCAN_RESULTS: std::sync::Mutex<Vec<span_core::DeviceInfo>> =
+        std::sync::Mutex::new(Vec::new());
 
     pub fn open() -> io::Result<()> {
         // The GUI is the normal entry point: make the daemon and auto-start
@@ -763,7 +765,12 @@ mod macos {
         std::thread::spawn(|| {
             let result = load_or_create_local_device()
                 .and_then(|local| crate::scan_devices(&local, Duration::from_millis(700)))
-                .map(|_| "")
+                .map(|devices| {
+                    if let Ok(mut results) = SCAN_RESULTS.lock() {
+                        *results = devices;
+                    }
+                    ""
+                })
                 .unwrap_or("操作失败，请检查网络设置。");
             let Some(controller) = CONTROLLER_INSTANCE.get().copied() else {
                 ACTION_IN_PROGRESS.store(false, Ordering::Release);
@@ -788,10 +795,17 @@ mod macos {
             }
             let store = TrustStore::load(trust_store_path()?)?;
             refresh_trusted_controls(&store)?;
-            let available: Vec<_> = store
-                .devices()
+            let scan = SCAN_RESULTS
+                .lock()
+                .map_err(|_| io::Error::other("scan lock unavailable"))?;
+            let available: Vec<_> = scan
                 .iter()
-                .filter(|device| device.trust_state != TrustState::Trusted)
+                .filter(|device| {
+                    matches!(
+                        device.trust_state,
+                        TrustState::Discovered | TrustState::Pending
+                    )
+                })
                 .collect();
             if available.is_empty() {
                 return Ok("没有发现新设备。可信设备会自动同步。".into());

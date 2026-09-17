@@ -25,13 +25,7 @@ final class SpanClipboardSync {
     private SpanClipboardSync() {}
 
     static int sendCurrentClipboard(Context context) throws Exception {
-        String text = readClipboardText(context);
-        if (text == null) {
-            throw new SecurityException("clipboard unavailable: empty or background access denied");
-        }
-        // Every current entry point is an explicit user action, not a clipboard
-        // observer. Do not mistake an intentional resend for an automatic echo.
-        return sendText(context, text, true);
+        return sendText(context, readClipboardText(context), false);
     }
 
     static int sendSharedText(Context context, String text) throws Exception {
@@ -111,7 +105,7 @@ final class SpanClipboardSync {
                 return 0;
             }
             if (inFlightText != null && inFlightText.equals(text)) return 0;
-            if (!explicitShare && lastSentText != null && lastSentText.equals(text)
+            if (lastSentText != null && lastSentText.equals(text)
                     && now - lastSentAtMillis <= DUPLICATE_WINDOW_MILLIS) {
                 return 0;
             }

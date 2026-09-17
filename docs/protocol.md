@@ -27,8 +27,7 @@ sequenceDiagram
     User->>PC: 允许信任
     PC-->>Phone: 进入 Trusted
     Phone->>PC: 发送纯文本剪贴板
-    PC-->>PC: 校验信任、解密并写入系统剪贴板
-    PC-->>Phone: SPAN_OK 确认处理成功
+    PC-->>PC: 写入系统剪贴板
 ```
 
 ## 广播规则
@@ -40,4 +39,4 @@ sequenceDiagram
 
 ## 当前实现
 
-PC MVP 当前使用 `46792/UDP` 做局域网发现，使用 `46793/TCP` 做文本传输。接收端仅在完成信任校验、解密和剪贴板写入后回复 `SPAN_OK\n`；Android 端收到该回执才向用户报告发送成功，并会对瞬时连接或回执超时进行有限重试。详细格式见 `docs/discovery-protocol.md`。
+PC MVP 当前使用 `46792/UDP` 做局域网发现，使用 `46793/TCP` 做文本传输。详细格式见 `docs/discovery-protocol.md`。

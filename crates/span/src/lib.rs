@@ -308,17 +308,13 @@ fn spawn_receiver(local: LocalDevice, suppressed_text: Arc<Mutex<Option<String>>
         if let Err(error) = receive_text_forever(|packet| {
             let store = TrustStore::load(&trust_path)?;
             let Some(trusted) = store.trusted_device(&packet.from) else {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!("rejected text from untrusted device: {}", packet.from),
-                ));
+                eprintln!("rejected text from untrusted device: {}", packet.from);
+                return Ok(());
             };
 
             let Some(sender_key) = trusted.public_key.as_deref() else {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    format!("rejected text from device without key: {}", packet.from),
-                ));
+                eprintln!("rejected text from device without key: {}", packet.from);
+                return Ok(());
             };
 
             let text = decrypt_text(&packet, &local.private_key, sender_key)?;
@@ -642,12 +638,14 @@ fn scan_devices(local: &LocalDevice, timeout: Duration) -> io::Result<Vec<span_c
     // that case use its continuously refreshed store instead of competing for
     // the socket. This keeps the GUI and CLI usable without stopping the daemon.
     let mut store = TrustStore::load(trust_store_path()?)?;
+    let mut live_ids = Vec::new();
     match discover_once(local, timeout) {
         Ok(packets) => {
             for (packet, addr) in packets {
                 if packet.id == local.id {
                     continue;
                 }
+                live_ids.push(packet.id.clone());
                 let mut info = packet.into_device_info();
                 info.endpoint = Some(addr.ip().to_string());
                 let _ = store.record_discovered(info)?;
@@ -660,7 +658,7 @@ fn scan_devices(local: &LocalDevice, timeout: Duration) -> io::Result<Vec<span_c
     Ok(store
         .devices()
         .iter()
-        .filter(|device| device.id != local.id)
+        .filter(|device| device.id != local.id && live_ids.contains(&device.id))
         .cloned()
         .collect())
 }

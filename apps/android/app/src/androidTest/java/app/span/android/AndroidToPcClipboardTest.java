@@ -9,15 +9,12 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
-import android.view.View;
-import android.view.ViewGroup;
-import android.widget.Button;
+import androidx.lifecycle.Lifecycle;
 import androidx.test.core.app.ActivityScenario;
 import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -26,7 +23,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -74,24 +70,26 @@ public final class AndroidToPcClipboardTest {
         context.getSharedPreferences("span", Context.MODE_PRIVATE).edit().clear().commit();
     }
 
-    @Test public void sendButtonExplicitlySendsCurrentClipboardTwice() throws Exception {
+    @Test public void foregroundWakeAutomaticallySendsCurrentClipboardTwice() throws Exception {
         try (ActivityScenario<MainActivity> activity = ActivityScenario.launch(MainActivity.class)) {
             // MainActivity starts the production receiver on 46793. Stop only that
             // listener so this test's fake PC can own the same production port.
             context.stopService(new Intent(context, SpanReceiveService.class));
             waitUntilTextPortCanBind();
 
-            assertClipboardSentAfterButtonClick(activity, "Android clipboard A ✓");
-            assertClipboardSentAfterButtonClick(activity, "Android clipboard B ✓");
-            // Explicit user sends must not be discarded by the automatic echo
-            // or duplicate window, even when the clipboard has not changed.
-            assertClipboardSentAfterButtonClick(activity, "Android clipboard B ✓");
+            assertClipboardSentAfterWake(activity, "Android clipboard A ✓");
+            assertClipboardSentAfterWake(activity, "Android clipboard B ✓");
         }
     }
 
-    private void assertClipboardSentAfterButtonClick(
+    private void assertClipboardSentAfterWake(
             ActivityScenario<MainActivity> activity, String expected) throws Exception {
-        waitForSendButtonReady(activity);
+        activity.moveToState(Lifecycle.State.CREATED);
+        ClipboardManager clipboard =
+                (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+        assertNotNull(clipboard);
+        clipboard.setPrimaryClip(ClipData.newPlainText("test", expected));
+
         try (ServerSocket server = new ServerSocket()) {
             server.setReuseAddress(true);
             server.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), SpanProtocol.TEXT_PORT));
@@ -100,72 +98,19 @@ public final class AndroidToPcClipboardTest {
             Thread receiver = new Thread(received, "fake-span-pc");
             receiver.start();
 
-            activity.onActivity(mainActivity -> {
-                ClipboardManager clipboard = (ClipboardManager)
-                        mainActivity.getSystemService(Context.CLIPBOARD_SERVICE);
-                assertNotNull(clipboard);
-                clipboard.setPrimaryClip(ClipData.newPlainText("test", expected));
-                Button send = findButton(
-                        mainActivity.getWindow().getDecorView(), "发送当前剪贴板");
-                assertNotNull("the explicit clipboard send button must be visible", send);
-                send.performClick();
-            });
+            activity.moveToState(Lifecycle.State.RESUMED);
             assertEquals(expected, received.get(6, TimeUnit.SECONDS));
-            waitForSendButtonReady(activity);
         }
-    }
-
-    private void waitForSendButtonReady(ActivityScenario<MainActivity> activity) throws Exception {
-        long deadline = System.currentTimeMillis() + 3000;
-        while (System.currentTimeMillis() < deadline) {
-            AtomicBoolean ready = new AtomicBoolean();
-            activity.onActivity(mainActivity -> {
-                Button send = findButton(
-                        mainActivity.getWindow().getDecorView(), "发送当前剪贴板");
-                ready.set(send != null && send.isEnabled());
-            });
-            if (ready.get()) return;
-            Thread.sleep(50);
-        }
-        throw new AssertionError("clipboard send button did not become ready");
-    }
-
-    private Button findButton(View view, String label) {
-        if (view instanceof Button && label.contentEquals(((Button) view).getText())) {
-            return (Button) view;
-        }
-        if (view instanceof ViewGroup) {
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                Button match = findButton(group.getChildAt(i), label);
-                if (match != null) return match;
-            }
-        }
-        return null;
     }
 
     private String receiveAndDecrypt(ServerSocket server) throws Exception {
-        // Drop the first connection after reading it. This reproduces a receiver
-        // restart or a lost acknowledgement and proves the production Android
-        // sender retries instead of reporting a false success.
-        readAndDecrypt(server, false);
-        return readAndDecrypt(server, true);
-    }
-
-    private String readAndDecrypt(ServerSocket server, boolean acknowledge) throws Exception {
         try (Socket socket = server.accept();
              BufferedReader reader = new BufferedReader(new InputStreamReader(
                      socket.getInputStream(), StandardCharsets.UTF_8))) {
             SpanTextPacket packet = SpanTextPacket.parse(reader.readLine());
             assertNotNull("Android must send a valid Span text packet", packet);
             assertEquals("android-send-test", packet.fromDeviceId);
-            String text = SpanCrypto.decryptText(packet, PC_PRIVATE, androidPublic);
-            if (acknowledge) {
-                OutputStream output = socket.getOutputStream();
-                output.write("SPAN_OK\n".getBytes(StandardCharsets.UTF_8));
-                output.flush();
-            }
-            return text;
+            return SpanCrypto.decryptText(packet, PC_PRIVATE, androidPublic);
         }
     }
 

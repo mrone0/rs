@@ -99,6 +99,24 @@ public final class MainActivity extends Activity {
         if (!isFinishing()) SpanClipboardSync.writePendingRemoteClipboard(this);
     }
 
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus || isFinishing() || worker.isShutdown()) return;
+        if (SpanClipboardSync.writePendingRemoteClipboard(this)) return;
+        worker.execute(this::sendClipboardAfterWake);
+    }
+
+    private void sendClipboardAfterWake() {
+        try {
+            int sent = SpanClipboardSync.sendCurrentClipboard(this);
+            if (sent > 0) runOnUiThread(() -> showActivity("已发送到 " + sent + " 台可信设备"));
+        } catch (SecurityException error) {
+            runOnUiThread(() -> showActivity("点击“发送当前剪贴板”重试"));
+        } catch (Exception error) {
+            runOnUiThread(() -> showActivity("发送失败，请检查可信设备是否在线"));
+        }
+    }
+
     @Override protected void onDestroy() {
         mainHandler.removeCallbacksAndMessages(null);
         discovery.destroy();
@@ -276,7 +294,7 @@ public final class MainActivity extends Activity {
         List<SpanDevice> nearby = new ArrayList<>();
         for (SpanDevice device : devices) {
             if (device.trusted) trusted.add(device);
-            else nearby.add(device);
+            else if (System.currentTimeMillis() - device.lastSeenMillis < 30_000) nearby.add(device);
         }
 
         int count = trusted.size();

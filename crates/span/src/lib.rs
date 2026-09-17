@@ -308,13 +308,17 @@ fn spawn_receiver(local: LocalDevice, suppressed_text: Arc<Mutex<Option<String>>
         if let Err(error) = receive_text_forever(|packet| {
             let store = TrustStore::load(&trust_path)?;
             let Some(trusted) = store.trusted_device(&packet.from) else {
-                eprintln!("rejected text from untrusted device: {}", packet.from);
-                return Ok(());
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("rejected text from untrusted device: {}", packet.from),
+                ));
             };
 
             let Some(sender_key) = trusted.public_key.as_deref() else {
-                eprintln!("rejected text from device without key: {}", packet.from);
-                return Ok(());
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("rejected text from device without key: {}", packet.from),
+                ));
             };
 
             let text = decrypt_text(&packet, &local.private_key, sender_key)?;

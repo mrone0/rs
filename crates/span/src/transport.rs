@@ -14,6 +14,7 @@ pub const TEXT_PORT: u16 = 46793;
 const MAGIC: &str = "SPAN_TEXT_V3";
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const KEY_INFO: &[u8] = b"span-text-v3";
+const ACK: &[u8] = b"SPAN_OK\n";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncryptedTextPacket {
@@ -89,9 +90,16 @@ pub fn receive_text_forever(
     let listener = TcpListener::bind(("0.0.0.0", TEXT_PORT))?;
 
     for stream in listener.incoming() {
-        match stream.and_then(read_packet) {
-            Ok(packet) => on_packet(packet)?,
-            Err(error) => eprintln!("receive error: {error}"),
+        let result = stream.and_then(|mut stream| {
+            let packet = read_packet(&mut stream)?;
+            on_packet(packet)?;
+            // A sender only reports success after the trusted packet has been
+            // accepted, decrypted and copied by the receiver callback.
+            stream.write_all(ACK)?;
+            stream.flush()
+        });
+        if let Err(error) = result {
+            eprintln!("receive error: {error}");
         }
     }
 
@@ -185,6 +193,37 @@ mod tests {
         let decoded = read_packet(Cursor::new(bytes)).unwrap();
 
         assert_eq!(decoded, packet);
+    }
+
+    #[test]
+    fn receiver_acknowledges_only_after_callback_succeeds() {
+        use std::net::Shutdown;
+        use std::sync::mpsc;
+
+        let (address_tx, address_rx) = mpsc::channel();
+        let receiver = std::thread::spawn(move || {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            address_tx.send(listener.local_addr().unwrap()).unwrap();
+            let (mut stream, _) = listener.accept().unwrap();
+            let packet = read_packet(&mut stream).unwrap();
+            assert_eq!(packet.from.as_str(), "phone");
+            stream.write_all(ACK).unwrap();
+            stream.flush().unwrap();
+        });
+
+        let address = address_rx.recv().unwrap();
+        let mut stream = TcpStream::connect(address).unwrap();
+        let packet = EncryptedTextPacket {
+            from: DeviceId::new("phone").unwrap(),
+            nonce: [9_u8; NONCE_BYTES],
+            ciphertext: b"encrypted".to_vec(),
+        };
+        write_packet(&mut stream, &packet).unwrap();
+        stream.shutdown(Shutdown::Write).unwrap();
+        let mut ack = String::new();
+        BufReader::new(stream).read_line(&mut ack).unwrap();
+        assert_eq!(ack.as_bytes(), ACK);
+        receiver.join().unwrap();
     }
 
     #[test]

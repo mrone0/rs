@@ -17,6 +17,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4;
 import androidx.test.platform.app.InstrumentationRegistry;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -141,13 +142,27 @@ public final class AndroidToPcClipboardTest {
     }
 
     private String receiveAndDecrypt(ServerSocket server) throws Exception {
+        // Drop the first connection after reading it. This reproduces a receiver
+        // restart or a lost acknowledgement and proves the production Android
+        // sender retries instead of reporting a false success.
+        readAndDecrypt(server, false);
+        return readAndDecrypt(server, true);
+    }
+
+    private String readAndDecrypt(ServerSocket server, boolean acknowledge) throws Exception {
         try (Socket socket = server.accept();
              BufferedReader reader = new BufferedReader(new InputStreamReader(
                      socket.getInputStream(), StandardCharsets.UTF_8))) {
             SpanTextPacket packet = SpanTextPacket.parse(reader.readLine());
             assertNotNull("Android must send a valid Span text packet", packet);
             assertEquals("android-send-test", packet.fromDeviceId);
-            return SpanCrypto.decryptText(packet, PC_PRIVATE, androidPublic);
+            String text = SpanCrypto.decryptText(packet, PC_PRIVATE, androidPublic);
+            if (acknowledge) {
+                OutputStream output = socket.getOutputStream();
+                output.write("SPAN_OK\n".getBytes(StandardCharsets.UTF_8));
+                output.flush();
+            }
+            return text;
         }
     }
 

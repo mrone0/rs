@@ -1,5 +1,5 @@
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
 use span_core::{DeviceId, DeviceInfo, Platform, TrustState};
@@ -51,12 +51,11 @@ pub fn broadcast_once(device: &LocalDevice) -> io::Result<()> {
     let socket = UdpSocket::bind(("0.0.0.0", 0))?;
     socket.set_broadcast(true)?;
     let packet = encode_packet(&DiscoveryPacket::from_local(device));
-    socket.send_to(packet.as_bytes(), ("255.255.255.255", DISCOVERY_PORT))?;
-    Ok(())
+    send_to_local_networks(&socket, packet.as_bytes())
 }
 
 pub fn discover_once(
-    _device: &LocalDevice,
+    device: &LocalDevice,
     timeout: Duration,
 ) -> io::Result<Vec<(DiscoveryPacket, SocketAddr)>> {
     // Use an ephemeral source port. The daemon owns UDP 46792, so a manual
@@ -64,7 +63,12 @@ pub fn discover_once(
     let socket = UdpSocket::bind(("0.0.0.0", 0))?;
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_millis(150)))?;
-    socket.send_to(PROBE_MAGIC.as_bytes(), ("255.255.255.255", DISCOVERY_PORT))?;
+    send_to_local_networks(&socket, PROBE_MAGIC.as_bytes())?;
+
+    // Also advertise the scanner itself. This lets the peer daemon learn the
+    // scanner even if a platform firewall drops the unicast probe response.
+    let packet = encode_packet(&DiscoveryPacket::from_local(device));
+    send_to_local_networks(&socket, packet.as_bytes())?;
 
     let deadline = Instant::now() + timeout;
     let mut buffer = [0_u8; 1024];
@@ -87,6 +91,55 @@ pub fn discover_once(
     }
 
     Ok(packets)
+}
+
+/// Send on every IPv4 subnet instead of relying only on the limited broadcast
+/// address. Windows machines commonly have WSL, VPN and virtual adapters; a
+/// single `255.255.255.255` packet can otherwise leave through the wrong one.
+fn send_to_local_networks(socket: &UdpSocket, payload: &[u8]) -> io::Result<()> {
+    let mut targets = local_broadcast_targets();
+    targets.push(Ipv4Addr::BROADCAST);
+    targets.sort_unstable();
+    targets.dedup();
+
+    let mut sent = false;
+    let mut last_error = None;
+    for target in targets {
+        match socket.send_to(payload, (target, DISCOVERY_PORT)) {
+            Ok(_) => sent = true,
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    if sent {
+        Ok(())
+    } else {
+        Err(last_error.unwrap_or_else(|| io::Error::other("no IPv4 broadcast target found")))
+    }
+}
+
+fn local_broadcast_targets() -> Vec<Ipv4Addr> {
+    get_if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|interface| match interface.addr {
+            get_if_addrs::IfAddr::V4(address)
+                if !address.ip.is_loopback() && !address.ip.is_unspecified() =>
+            {
+                Some(
+                    address
+                        .broadcast
+                        .unwrap_or_else(|| subnet_broadcast(address.ip, address.netmask)),
+                )
+            }
+            _ => None,
+        })
+        .filter(|address| !address.is_loopback() && !address.is_unspecified())
+        .collect()
+}
+
+fn subnet_broadcast(ip: Ipv4Addr, netmask: Ipv4Addr) -> Ipv4Addr {
+    Ipv4Addr::from(u32::from(ip) | !u32::from(netmask))
 }
 
 pub fn respond_to_probe(device: &LocalDevice, target: SocketAddr) -> io::Result<()> {
@@ -164,5 +217,20 @@ mod tests {
             Some(DiscoveryMessage::Announcement(packet))
         );
         assert_eq!(decode_message(PROBE_MAGIC), Some(DiscoveryMessage::Probe));
+    }
+
+    #[test]
+    fn calculates_directed_broadcast_address() {
+        assert_eq!(
+            subnet_broadcast(
+                Ipv4Addr::new(192, 168, 31, 42),
+                Ipv4Addr::new(255, 255, 255, 0)
+            ),
+            Ipv4Addr::new(192, 168, 31, 255)
+        );
+        assert_eq!(
+            subnet_broadcast(Ipv4Addr::new(10, 4, 7, 8), Ipv4Addr::new(255, 255, 0, 0)),
+            Ipv4Addr::new(10, 4, 255, 255)
+        );
     }
 }

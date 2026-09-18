@@ -196,9 +196,6 @@ fn spawn_discovery_listener(
                     }
 
                     let endpoint = addr.ip().to_string();
-                    let fixed_discovery_addr =
-                        std::net::SocketAddr::new(addr.ip(), crate::discovery::DISCOVERY_PORT);
-                    let _ = respond_to_probe(&local, fixed_discovery_addr);
                     let mut store = TrustStore::load(&store_path)?;
                     let mut info = packet.into_device_info();
                     info.endpoint = Some(endpoint.clone());

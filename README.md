@@ -87,7 +87,7 @@ SPAN_LOCAL_GUI_BINARY="$PWD/../../target/release/span-gui" \
 GitHub Actions 的桌面压缩包现在只放最小可运行内容，不再塞 README/协议文档：
 
 - macOS：压缩包里只有 `Span.app`，用户双击即可打开 GUI
-- Windows：只有 `span-gui.exe` 和 `span.exe`，双击 `span-gui.exe` 或终端运行 `span` 都可以
+- Windows：优先下载 `span-windows-x64-setup.exe` 标准安装器；另保留含 `span-gui.exe` 和 `span.exe` 的免安装 zip
 - Linux：只有 `span` 和 `span-gui`
 
 保留两个桌面二进制是为了同时满足：GUI 双击不弹终端、CLI/daemon 仍可被脚本和自启动调用。

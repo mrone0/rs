@@ -8,7 +8,8 @@ PC 端不要求用户本地构建，直接用 GitHub Actions 产物。当前第�
 
 - `span-macos-arm64.dmg` / `span-macos-x64.dmg`：标准 macOS 安装镜像，可将 `Span.app` 拖入 Applications
 - `span-macos-arm64.tar.gz` / `span-macos-x64.tar.gz`：便携版，只包含 `Span.app`
-- `span-windows-x64.zip`：只包含 `span.exe` 和 `span-gui.exe`
+- `span-windows-x64-setup.exe`：Windows 标准安装器，自动安装后台同步、开始菜单快捷方式，并放行局域网发现与文本同步端口
+- `span-windows-x64.zip`：便携版，只包含 `span.exe` 和 `span-gui.exe`
 - `span-linux-x64.tar.gz`：只包含 `span` 和 `span-gui`；Linux 当前 GUI 会提示暂不支持
 
 触发方式：
@@ -25,10 +26,12 @@ git push origin v0.1.0
 包内不再塞 README、协议文档等杂项，只保留可运行内容：
 
 - macOS：`Span.app`，双击打开 GUI；内部带 `span` daemon/CLI 与 `span-gui`
-- Windows：`span-gui.exe` 双击打开 GUI；`span.exe` 用于 CLI 和后台 daemon
+- Windows：普通用户优先运行 `span-windows-x64-setup.exe`；安装后从开始菜单打开 Span。zip 仅作为免安装便携版
 - Linux：`span` CLI/daemon 与 `span-gui` 占位 GUI
 
 Windows/Linux 仍保留两个二进制，是为了让 Windows GUI 使用无控制台子系统，同时 daemon/CLI 保持标准终端行为；这是当前最小且最稳的拆分。
+
+Windows 安装器会添加两条仅限本地子网的入站规则：`46792/UDP` 用于设备发现，`46793/TCP` 用于加密文本传输；卸载时会自动移除。便携版不会修改系统防火墙，首次运行时需要在 Windows 安全提示中允许专用网络访问。
 
 ## 本地验证
 

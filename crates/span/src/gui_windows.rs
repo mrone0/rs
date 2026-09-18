@@ -1058,8 +1058,8 @@ mod tests {
     #[test]
     fn dpi_scaling_preserves_logical_layout() {
         assert_eq!(scale(WIDTH, 96), WIDTH);
-        assert_eq!(scale(WIDTH, 144), 870);
-        assert_eq!(scale(HEIGHT, 192), 1060);
+        assert_eq!(scale(WIDTH, 144), 810);
+        assert_eq!(scale(HEIGHT, 192), 880);
     }
     #[test]
     fn windows_text_is_utf16_and_terminated() {

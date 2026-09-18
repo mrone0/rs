@@ -192,7 +192,8 @@ jobs:
           if (-not (Test-Path $iscc)) {
             throw "Inno Setup compiler not found at $iscc"
           }
-          & $iscc "/DMyAppVersion=$version" installer/windows/span.iss
+          $env:SPAN_VERSION = $version
+          & $iscc installer/windows/span.iss
           if ($LASTEXITCODE -ne 0) {
             throw "Inno Setup failed with exit code $LASTEXITCODE"
           }

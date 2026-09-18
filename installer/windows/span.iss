@@ -1,4 +1,6 @@
-#ifndef MyAppVersion
+#define MyAppVersion GetEnv("SPAN_VERSION")
+#if MyAppVersion == ""
+  #undef MyAppVersion
   #define MyAppVersion "0.0.0-dev"
 #endif
 

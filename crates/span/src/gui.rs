@@ -834,7 +834,7 @@ mod macos {
                 .filter(|device| {
                     matches!(
                         device.trust_state,
-                        TrustState::Discovered | TrustState::Pending
+                        TrustState::Discovered | TrustState::Pending | TrustState::Revoked
                     )
                 })
                 .collect();
@@ -852,6 +852,7 @@ mod macos {
                     let mut store = TrustStore::load(trust_store_path()?)?;
                     if store.trust_existing(&device.id)? {
                         accepted += 1;
+                        let _ = crate::notify_pairing_accept(&device.id);
                     }
                 }
             }

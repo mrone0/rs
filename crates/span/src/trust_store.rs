@@ -128,11 +128,31 @@ impl TrustStore {
         };
         let existing = &mut self.devices[index];
 
-        if matches!(
-            existing.trust_state,
-            TrustState::Blocked | TrustState::Revoked
-        ) {
+        if existing.trust_state == TrustState::Blocked {
             return Ok(false);
+        }
+
+        // Revocation blocks automatic re-trust, but keep the device's live
+        // address fresh so an explicit manual scan can add it again later.
+        if existing.trust_state == TrustState::Revoked {
+            if existing
+                .public_key
+                .as_deref()
+                .zip(discovered.public_key.as_deref())
+                .is_some_and(|(old, new)| old != new)
+            {
+                self.devices.push(discovered);
+                normalize_devices(&mut self.devices);
+                self.save()?;
+                return Ok(false);
+            }
+            discovered.trust_state = TrustState::Revoked;
+            let changed = *existing != discovered;
+            if changed {
+                *existing = discovered;
+                self.save()?;
+            }
+            return Ok(changed);
         }
 
         if let (Some(existing_key), Some(discovered_key)) = (
@@ -501,6 +521,45 @@ mod tests {
 
         let loaded = TrustStore::load(&path).unwrap();
         assert!(loaded.trusted_devices().is_empty());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rediscovery_refreshes_revoked_device_for_manual_repairing() {
+        let path = temp_file("revoked-rediscovery.tsv");
+        let _ = fs::remove_file(&path);
+        let id = DeviceId::new("abc").unwrap();
+        let key = "aa".repeat(32);
+        let mut store = TrustStore::load(&path).unwrap();
+        store
+            .trust(
+                id.clone(),
+                "MacBook".to_string(),
+                Platform::MacOs,
+                Some("192.168.1.2".to_string()),
+                Some(key.clone()),
+            )
+            .unwrap();
+        store.revoke(&id).unwrap();
+
+        assert!(
+            store
+                .record_discovered(DeviceInfo {
+                    id: id.clone(),
+                    name: "MacBook".to_string(),
+                    platform: Platform::MacOs,
+                    trust_state: TrustState::Discovered,
+                    endpoint: Some("192.168.1.9".to_string()),
+                    public_key: Some(key),
+                })
+                .unwrap()
+        );
+        let device = store.device(&id).unwrap();
+        assert_eq!(device.trust_state, TrustState::Revoked);
+        assert_eq!(device.endpoint.as_deref(), Some("192.168.1.9"));
+        assert!(store.trust_existing(&id).unwrap());
+        assert!(store.trusted_device(&id).is_some());
 
         let _ = fs::remove_file(&path);
     }

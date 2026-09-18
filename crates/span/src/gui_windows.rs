@@ -2,39 +2,76 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 use super::io;
 use span_core::{DeviceId, DeviceInfo, TrustState};
-use std::{cell::RefCell, ptr, sync::mpsc, time::Duration};
+use std::{
+    cell::RefCell,
+    ptr,
+    sync::mpsc,
+    time::{Duration, Instant},
+};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-    Graphics::Gdi::{COLOR_WINDOW, CreateFontW, DeleteObject, HFONT},
-    System::LibraryLoader::GetModuleHandleW,
-    UI::{HiDpi::*, Input::KeyboardAndMouse::EnableWindow, WindowsAndMessaging::*},
+    Graphics::Gdi::{
+        BeginPaint, COLOR_WINDOW, CreateFontW, CreateSolidBrush, DC_BRUSH, DC_PEN, DT_CENTER,
+        DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FillRect,
+        GetStockObject, HFONT, InvalidateRect, PAINTSTRUCT, RoundRect, SelectObject, SetBkMode,
+        SetDCBrushColor, SetDCPenColor, SetTextColor, TRANSPARENT,
+    },
+    System::{
+        LibraryLoader::GetModuleHandleW,
+        SystemServices::{SS_CENTER, SS_ENDELLIPSIS, SS_RIGHT},
+    },
+    UI::{
+        Controls::{DRAWITEMSTRUCT, ODS_DISABLED, ODS_FOCUS, ODS_SELECTED},
+        HiDpi::*,
+        Input::KeyboardAndMouse::EnableWindow,
+        WindowsAndMessaging::*,
+    },
 };
 
 const ADD: u16 = 1001;
 const REMOVE: u16 = 1002;
-const LIST: u16 = 1003;
+const PICKER: u16 = 1003;
 const TIMER: usize = 1;
-const WIDTH: i32 = 580;
-const HEIGHT: i32 = 530;
+const WIDTH: i32 = 540;
+const HEIGHT: i32 = 440;
 const STYLE: u32 = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TextStyle {
+    Header,
+    Running,
+    Hero,
+    Lead,
+    CardKind,
+    CardValue,
+    Connection,
+    Status,
+    Footer,
+}
 
 struct Control {
     hwnd: HWND,
     rect: (i32, i32, i32, i32),
-    heading: bool,
+    style: TextStyle,
 }
 struct State {
     controls: Vec<Control>,
     fonts: Vec<HFONT>,
     dpi: u32,
-    list: HWND,
-    empty: HWND,
+    picker: HWND,
     add: HWND,
     remove: HWND,
     status: HWND,
+    title: HWND,
+    lead: HWND,
+    remote_kind: HWND,
+    remote_summary: HWND,
     devices: Vec<DeviceInfo>,
     receiver: Option<mpsc::Receiver<io::Result<Outcome>>>,
     busy: bool,
+    has_trusted: bool,
+    last_refresh: Instant,
+    store_initialized: bool,
 }
 enum Outcome {
     Discovered(Vec<DeviceInfo>),
@@ -53,6 +90,7 @@ pub fn prompt_pairing(device_id: &str, name: &str, platform: &str) -> io::Result
             let mut store =
                 crate::trust_store::TrustStore::load(crate::config::trust_store_path()?)?;
             store.trust_existing(&id)?;
+            let _ = crate::notify_pairing_accept(&id);
             alert(
                 ptr::null_mut(),
                 &format!("已信任 {name}，剪贴板同步已开启。"),
@@ -66,7 +104,15 @@ pub fn prompt_pairing(device_id: &str, name: &str, platform: &str) -> io::Result
 pub fn open() -> io::Result<()> {
     let local = crate::config::load_or_create_local_device()?;
     let autostart_error = crate::autostart::install().err();
-    let daemon_error = crate::daemon_control::start_daemon().err();
+    // The installer can replace span.exe while the previous background
+    // process is still alive. Restart here so opening the updated UI always
+    // activates the matching daemon and protocol implementation.
+    let daemon_error = crate::daemon_control::stop_daemon()
+        .and_then(|()| {
+            std::thread::sleep(Duration::from_millis(150));
+            crate::daemon_control::start_daemon()
+        })
+        .err();
     unsafe {
         // Thread-local context also works if another entry point already set process awareness.
         let previous = SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -119,14 +165,20 @@ unsafe fn run_window(
             controls: vec![],
             fonts: vec![],
             dpi: GetDpiForWindow(hwnd).max(96),
-            list: ptr::null_mut(),
-            empty: ptr::null_mut(),
+            picker: ptr::null_mut(),
             add: ptr::null_mut(),
             remove: ptr::null_mut(),
             status: ptr::null_mut(),
+            title: ptr::null_mut(),
+            lead: ptr::null_mut(),
+            remote_kind: ptr::null_mut(),
+            remote_summary: ptr::null_mut(),
             devices: vec![],
             receiver: None,
             busy: false,
+            has_trusted: false,
+            last_refresh: Instant::now(),
+            store_initialized: false,
         })
     });
     if let Err(error) = create_controls(hwnd, local) {
@@ -190,15 +242,44 @@ unsafe extern "system" fn window_proc(
         WM_COMMAND => {
             let id = (wparam & 0xffff) as u16;
             let code = (wparam >> 16) as u32;
-            if id == LIST && code == LBN_SELCHANGE {
+            if id == PICKER && code == CBN_SELCHANGE {
                 update_controls();
             } else if code == BN_CLICKED && (id == ADD || id == REMOVE) {
                 start_action(hwnd, id);
             }
             0
         }
+        WM_PAINT => {
+            paint_window(hwnd);
+            0
+        }
+        WM_CTLCOLORSTATIC => paint_static(wparam as _, lparam as HWND),
+        WM_DRAWITEM => {
+            let item = &*(lparam as *const DRAWITEMSTRUCT);
+            if item.CtlID == u32::from(ADD) || item.CtlID == u32::from(REMOVE) {
+                paint_button(item);
+                1
+            } else {
+                DefWindowProcW(hwnd, message, wparam, lparam)
+            }
+        }
         WM_TIMER if wparam == TIMER => {
             poll_result(hwnd);
+            let should_refresh = STATE.with(|state| {
+                let mut state = state.borrow_mut();
+                let Some(s) = state.as_mut() else {
+                    return false;
+                };
+                if !s.busy && s.last_refresh.elapsed() >= Duration::from_secs(1) {
+                    s.last_refresh = Instant::now();
+                    true
+                } else {
+                    false
+                }
+            });
+            if should_refresh {
+                let _ = refresh();
+            }
             0
         }
         WM_DPICHANGED => {
@@ -244,7 +325,7 @@ unsafe fn control(
     rect: (i32, i32, i32, i32),
     id: u16,
     style: u32,
-    heading: bool,
+    text_style: TextStyle,
 ) -> io::Result<HWND> {
     let hwnd = CreateWindowExW(
         0,
@@ -267,112 +348,149 @@ unsafe fn control(
         s.borrow_mut().as_mut().unwrap().controls.push(Control {
             hwnd,
             rect,
-            heading,
+            style: text_style,
         })
     });
     Ok(hwnd)
 }
 unsafe fn create_controls(hwnd: HWND, local: &crate::config::LocalDevice) -> io::Result<()> {
-    control(hwnd, "STATIC", "Span", (28, 20, 520, 38), 0, 0, true)?;
     control(
         hwnd,
         "STATIC",
-        "在可信设备之间自动同步文本剪贴板",
-        (28, 62, 520, 26),
+        "Span",
+        (62, 20, 100, 30),
         0,
         0,
-        false,
-    )?;
-    control(hwnd, "STATIC", "本机", (28, 106, 520, 28), 0, 0, true)?;
-    control(
-        hwnd,
-        "STATIC",
-        &format!("{} · Windows", local.name),
-        (28, 142, 520, 26),
-        0,
-        0x00004000, /* SS_ENDELLIPSIS */
-        false,
+        TextStyle::Header,
     )?;
     control(
         hwnd,
         "STATIC",
-        "已添加可信设备",
-        (28, 188, 520, 28),
+        "●  同步中",
+        (414, 24, 98, 24),
+        0,
+        SS_RIGHT as u32,
+        TextStyle::Running,
+    )?;
+    let title = control(
+        hwnd,
+        "STATIC",
+        "连接你的设备",
+        (28, 72, 484, 34),
         0,
         0,
-        true,
+        TextStyle::Hero,
+    )?;
+    let lead = control(
+        hwnd,
+        "STATIC",
+        "发现同一网络中的 Span，并建立可信连接。",
+        (28, 108, 484, 25),
+        0,
+        0,
+        TextStyle::Lead,
     )?;
     control(
         hwnd,
         "STATIC",
-        "仅向可信设备同步；已添加不代表设备当前在线。",
-        (28, 224, 520, 25),
+        "这台 Windows",
+        (72, 164, 136, 20),
         0,
         0,
-        false,
+        TextStyle::CardKind,
     )?;
-    let list = control(
-        hwnd,
-        "LISTBOX",
-        "",
-        (28, 258, 520, 112),
-        LIST,
-        WS_BORDER | WS_VSCROLL | WS_TABSTOP | LBS_NOTIFY as u32 | LBS_NOINTEGRALHEIGHT as u32,
-        false,
-    )?;
-    let empty = control(
+    control(
         hwnd,
         "STATIC",
-        "暂无可信设备\r\n点击“添加设备…”以发现并信任同一网络中的设备。",
-        (40, 276, 490, 66),
+        &local.name,
+        (72, 190, 136, 42),
+        0,
+        SS_ENDELLIPSIS as u32,
+        TextStyle::CardValue,
+    )?;
+    control(
+        hwnd,
+        "STATIC",
+        "⇄",
+        (238, 184, 64, 40),
+        0,
+        SS_CENTER as u32,
+        TextStyle::Connection,
+    )?;
+    let remote_kind = control(
+        hwnd,
+        "STATIC",
+        "等待连接",
+        (356, 164, 136, 20),
         0,
         0,
-        false,
+        TextStyle::CardKind,
     )?;
-    let add = control(
+    let remote_summary = control(
         hwnd,
-        "BUTTON",
-        "添加设备…",
-        (28, 386, 200, 36),
-        ADD,
-        WS_TABSTOP | BS_PUSHBUTTON as u32,
-        false,
-    )?;
-    let remove = control(
-        hwnd,
-        "BUTTON",
-        "移除设备",
-        (348, 386, 200, 36),
-        REMOVE,
-        WS_TABSTOP | BS_PUSHBUTTON as u32,
-        false,
+        "STATIC",
+        "暂无设备",
+        (356, 190, 136, 42),
+        0,
+        SS_ENDELLIPSIS as u32,
+        TextStyle::CardValue,
     )?;
     let status = control(
         hwnd,
         "STATIC",
         "仅向可信设备同步剪贴板。",
-        (28, 436, 520, 44),
+        (28, 272, 484, 24),
         0,
-        0,
-        false,
+        SS_CENTER as u32,
+        TextStyle::Status,
+    )?;
+    let add = control(
+        hwnd,
+        "BUTTON",
+        "添加设备…",
+        (176, 306, 188, 36),
+        ADD,
+        WS_TABSTOP | BS_OWNERDRAW as u32,
+        TextStyle::Status,
+    )?;
+    let picker = control(
+        hwnd,
+        "COMBOBOX",
+        "",
+        (176, 354, 128, 180),
+        PICKER,
+        WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32,
+        TextStyle::Status,
+    )?;
+    let remove = control(
+        hwnd,
+        "BUTTON",
+        "移除",
+        (312, 354, 82, 30),
+        REMOVE,
+        WS_TABSTOP | BS_OWNERDRAW as u32,
+        TextStyle::Status,
     )?;
     control(
         hwnd,
         "STATIC",
         "关闭窗口后，后台仍会继续同步。",
-        (28, 492, 520, 24),
+        (28, 406, 484, 20),
         0,
-        0,
-        false,
+        SS_CENTER as u32,
+        TextStyle::Footer,
     )?;
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         let s = s.as_mut().unwrap();
-        s.list = list;
-        s.empty = empty;
+        s.picker = picker;
         s.add = add;
         s.remove = remove;
         s.status = status;
+        s.title = title;
+        s.lead = lead;
+        s.remote_kind = remote_kind;
+        s.remote_summary = remote_summary;
     });
     Ok(())
 }
@@ -404,38 +522,14 @@ unsafe fn layout(hwnd: HWND, suggested: Option<RECT>) {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         let Some(s) = state.as_mut() else { return };
-        let normal = CreateFontW(
-            -scale(15, dpi),
-            0,
-            0,
-            0,
-            400,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            5,
-            0,
-            wide("Microsoft YaHei UI").as_ptr(),
-        );
-        let heading = CreateFontW(
-            -scale(20, dpi),
-            0,
-            0,
-            0,
-            600,
-            0,
-            0,
-            0,
-            1,
-            0,
-            0,
-            5,
-            0,
-            wide("Microsoft YaHei UI").as_ptr(),
-        );
+        let fonts = vec![
+            make_font(13, 400, dpi),
+            make_font(18, 600, dpi),
+            make_font(23, 600, dpi),
+            make_font(11, 400, dpi),
+            make_font(14, 600, dpi),
+            make_font(24, 400, dpi),
+        ];
         for c in &s.controls {
             let (x, y, w, h) = c.rect;
             MoveWindow(
@@ -446,18 +540,250 @@ unsafe fn layout(hwnd: HWND, suggested: Option<RECT>) {
                 scale(h, dpi),
                 1,
             );
-            SendMessageW(
-                c.hwnd,
-                WM_SETFONT,
-                if c.heading { heading } else { normal } as usize,
-                1,
-            );
+            SendMessageW(c.hwnd, WM_SETFONT, fonts[font_index(c.style)] as usize, 1);
         }
         for font in s.fonts.drain(..) {
             DeleteObject(font);
         }
-        s.fonts = vec![normal, heading];
+        s.fonts = fonts;
     });
+    InvalidateRect(hwnd, ptr::null(), 1);
+}
+
+unsafe fn make_font(size: i32, weight: i32, dpi: u32) -> HFONT {
+    CreateFontW(
+        -scale(size, dpi),
+        0,
+        0,
+        0,
+        weight,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        5,
+        0,
+        wide("Microsoft YaHei UI").as_ptr(),
+    )
+}
+
+fn font_index(style: TextStyle) -> usize {
+    match style {
+        TextStyle::Header => 1,
+        TextStyle::Hero => 2,
+        TextStyle::Lead | TextStyle::CardKind | TextStyle::Footer => 3,
+        TextStyle::CardValue => 4,
+        TextStyle::Connection => 5,
+        TextStyle::Running | TextStyle::Status => 0,
+    }
+}
+
+const fn rgb(red: u32, green: u32, blue: u32) -> u32 {
+    red | (green << 8) | (blue << 16)
+}
+
+unsafe fn paint_window(hwnd: HWND) {
+    let mut paint: PAINTSTRUCT = std::mem::zeroed();
+    let hdc = BeginPaint(hwnd, &mut paint);
+    let dpi = STATE.with(|state| state.borrow().as_ref().map_or(96, |s| s.dpi));
+    let mut client: RECT = std::mem::zeroed();
+    GetClientRect(hwnd, &mut client);
+    let background = CreateSolidBrush(rgb(249, 250, 252));
+    FillRect(hdc, &client, background);
+    DeleteObject(background);
+
+    let old_brush = SelectObject(hdc, GetStockObject(DC_BRUSH));
+    let old_pen = SelectObject(hdc, GetStockObject(DC_PEN));
+    SetDCBrushColor(hdc, rgb(244, 246, 249));
+    SetDCPenColor(hdc, rgb(228, 232, 238));
+    for (x, y, w, h) in [(28, 150, 200, 102), (312, 150, 200, 102)] {
+        RoundRect(
+            hdc,
+            scale(x, dpi),
+            scale(y, dpi),
+            scale(x + w, dpi),
+            scale(y + h, dpi),
+            scale(16, dpi),
+            scale(16, dpi),
+        );
+    }
+
+    // App badge and the two device badges are deliberately drawn rather than
+    // relying on icon fonts that vary across Windows editions.
+    STATE.with(|state| {
+        let state = state.borrow();
+        let Some(s) = state.as_ref() else {
+            return;
+        };
+        SetDCBrushColor(hdc, rgb(10, 132, 255));
+        SetDCPenColor(hdc, rgb(10, 132, 255));
+        RoundRect(
+            hdc,
+            scale(28, dpi),
+            scale(18, dpi),
+            scale(52, dpi),
+            scale(42, dpi),
+            scale(8, dpi),
+            scale(8, dpi),
+        );
+        for (x, text) in [(40, "W"), (324, if s.has_trusted { "✓" } else { "+" })] {
+            SetDCBrushColor(hdc, rgb(226, 239, 255));
+            SetDCPenColor(hdc, rgb(226, 239, 255));
+            RoundRect(
+                hdc,
+                scale(x, dpi),
+                scale(180, dpi),
+                scale(x + 24, dpi),
+                scale(204, dpi),
+                scale(12, dpi),
+                scale(12, dpi),
+            );
+            SetBkMode(hdc, TRANSPARENT as i32);
+            SetTextColor(hdc, rgb(10, 105, 220));
+            if let Some(font) = s.fonts.get(4) {
+                SelectObject(hdc, *font);
+            }
+            let mut rect = RECT {
+                left: scale(x, dpi),
+                top: scale(180, dpi),
+                right: scale(x + 24, dpi),
+                bottom: scale(204, dpi),
+            };
+            let value = wide(text);
+            DrawTextW(
+                hdc,
+                value.as_ptr(),
+                -1,
+                &mut rect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+        }
+        if let Some(font) = s.fonts.get(4) {
+            SelectObject(hdc, *font);
+        }
+        SetTextColor(hdc, rgb(255, 255, 255));
+        let mut logo = RECT {
+            left: scale(28, dpi),
+            top: scale(18, dpi),
+            right: scale(52, dpi),
+            bottom: scale(42, dpi),
+        };
+        let value = wide("S");
+        DrawTextW(
+            hdc,
+            value.as_ptr(),
+            -1,
+            &mut logo,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+    });
+    SelectObject(hdc, old_pen);
+    SelectObject(hdc, old_brush);
+    EndPaint(hwnd, &paint);
+}
+
+unsafe fn paint_static(hdc: windows_sys::Win32::Graphics::Gdi::HDC, control: HWND) -> LRESULT {
+    SetBkMode(hdc, TRANSPARENT as i32);
+    let (style, has_trusted) = STATE.with(|state| {
+        let state = state.borrow();
+        let Some(s) = state.as_ref() else {
+            return (None, false);
+        };
+        (
+            s.controls
+                .iter()
+                .find(|c| c.hwnd == control)
+                .map(|c| c.style),
+            s.has_trusted,
+        )
+    });
+    let color = match style {
+        Some(TextStyle::Running) => rgb(36, 163, 76),
+        Some(TextStyle::Lead | TextStyle::CardKind | TextStyle::Footer) => rgb(112, 118, 128),
+        Some(TextStyle::Connection) if has_trusted => rgb(10, 132, 255),
+        Some(TextStyle::Connection) => rgb(160, 166, 176),
+        Some(TextStyle::Status) => rgb(82, 88, 98),
+        _ => rgb(28, 31, 36),
+    };
+    SetTextColor(hdc, color);
+    let background = if matches!(style, Some(TextStyle::CardKind | TextStyle::CardValue)) {
+        rgb(244, 246, 249)
+    } else {
+        rgb(249, 250, 252)
+    };
+    SetDCBrushColor(hdc, background);
+    GetStockObject(DC_BRUSH) as LRESULT
+}
+
+unsafe fn paint_button(item: &DRAWITEMSTRUCT) {
+    let primary = item.CtlID == u32::from(ADD);
+    let disabled = item.itemState & ODS_DISABLED != 0;
+    let pressed = item.itemState & ODS_SELECTED != 0;
+    let focused = item.itemState & ODS_FOCUS != 0;
+    let fill = if primary {
+        if disabled {
+            rgb(165, 202, 238)
+        } else if pressed {
+            rgb(0, 98, 205)
+        } else {
+            rgb(10, 132, 255)
+        }
+    } else if disabled {
+        rgb(239, 241, 244)
+    } else if pressed {
+        rgb(220, 224, 230)
+    } else {
+        rgb(232, 235, 240)
+    };
+    let old_brush = SelectObject(item.hDC, GetStockObject(DC_BRUSH));
+    let old_pen = SelectObject(item.hDC, GetStockObject(DC_PEN));
+    SetDCBrushColor(item.hDC, fill);
+    SetDCPenColor(item.hDC, if focused { rgb(0, 92, 190) } else { fill });
+    RoundRect(
+        item.hDC,
+        item.rcItem.left,
+        item.rcItem.top,
+        item.rcItem.right,
+        item.rcItem.bottom,
+        scale(
+            10,
+            STATE.with(|s| s.borrow().as_ref().map_or(96, |s| s.dpi)),
+        ),
+        scale(
+            10,
+            STATE.with(|s| s.borrow().as_ref().map_or(96, |s| s.dpi)),
+        ),
+    );
+    let length = GetWindowTextLengthW(item.hwndItem);
+    let mut text = vec![0_u16; usize::try_from(length).unwrap_or(0) + 1];
+    GetWindowTextW(item.hwndItem, text.as_mut_ptr(), text.len() as i32);
+    SetBkMode(item.hDC, TRANSPARENT as i32);
+    SetTextColor(
+        item.hDC,
+        if primary {
+            rgb(255, 255, 255)
+        } else if disabled {
+            rgb(156, 162, 172)
+        } else {
+            rgb(45, 49, 56)
+        },
+    );
+    let font = SendMessageW(item.hwndItem, WM_GETFONT, 0, 0);
+    if font != 0 {
+        SelectObject(item.hDC, font as _);
+    }
+    let mut rect = item.rcItem;
+    DrawTextW(
+        item.hDC,
+        text.as_ptr(),
+        length,
+        &mut rect,
+        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+    );
+    SelectObject(item.hDC, old_pen);
+    SelectObject(item.hDC, old_brush);
 }
 
 unsafe fn refresh() -> io::Result<()> {
@@ -466,52 +792,81 @@ unsafe fn refresh() -> io::Result<()> {
     STATE.with(|state| {
         let mut state = state.borrow_mut();
         let s = state.as_mut().unwrap();
-        let index = SendMessageW(s.list, LB_GETCURSEL, 0, 0);
+        if s.store_initialized && s.devices == devices {
+            return;
+        }
+        s.store_initialized = true;
+        let index = SendMessageW(s.picker, CB_GETCURSEL, 0, 0);
         let selected = usize::try_from(index)
             .ok()
             .and_then(|i| s.devices.get(i))
             .map(|d| d.id.clone());
-        SendMessageW(s.list, LB_RESETCONTENT, 0, 0);
+        SendMessageW(s.picker, CB_RESETCONTENT, 0, 0);
         for device in &devices {
             let text = wide(&format!(
                 "{} · {}",
                 device.name,
                 crate::config::platform_name(device.platform)
             ));
-            SendMessageW(s.list, LB_ADDSTRING, 0, text.as_ptr() as LPARAM);
+            SendMessageW(s.picker, CB_ADDSTRING, 0, text.as_ptr() as LPARAM);
         }
-        if let Some(index) = devices
+        let selected_index = devices
             .iter()
             .position(|d| Some(&d.id) == selected.as_ref())
-        {
-            SendMessageW(s.list, LB_SETCURSEL, index, 0);
-        }
+            .unwrap_or(0);
         s.devices = devices;
-        ShowWindow(
-            s.list,
-            if s.devices.is_empty() {
-                SW_HIDE
-            } else {
-                SW_SHOW
-            },
-        );
-        ShowWindow(
-            s.empty,
-            if s.devices.is_empty() {
-                SW_SHOW
-            } else {
-                SW_HIDE
-            },
-        );
+        if s.devices.is_empty() {
+            let empty = wide("暂无可信设备");
+            SendMessageW(s.picker, CB_ADDSTRING, 0, empty.as_ptr() as LPARAM);
+            SendMessageW(s.picker, CB_SETCURSEL, 0, 0);
+        } else {
+            SendMessageW(s.picker, CB_SETCURSEL, selected_index, 0);
+        }
+        let has_trusted = !s.devices.is_empty();
+        s.has_trusted = has_trusted;
         SetWindowTextW(
             s.add,
-            wide(if s.devices.is_empty() {
+            wide(if !has_trusted {
                 "添加设备…"
             } else {
                 "添加另一台设备…"
             })
             .as_ptr(),
         );
+        SetWindowTextW(
+            s.title,
+            wide(if has_trusted {
+                "已添加可信设备"
+            } else {
+                "连接你的设备"
+            })
+            .as_ptr(),
+        );
+        SetWindowTextW(
+            s.lead,
+            wide(if has_trusted {
+                "剪贴板会在可信设备之间自动同步。"
+            } else {
+                "发现同一网络中的 Span，并建立可信连接。"
+            })
+            .as_ptr(),
+        );
+        SetWindowTextW(
+            s.remote_kind,
+            wide(if has_trusted {
+                "可信设备"
+            } else {
+                "等待连接"
+            })
+            .as_ptr(),
+        );
+        let summary = match s.devices.as_slice() {
+            [] => "暂无设备".to_string(),
+            [device] => device.name.clone(),
+            [first, rest @ ..] => format!("{} 等 {} 台", first.name, rest.len() + 1),
+        };
+        SetWindowTextW(s.remote_summary, wide(&summary).as_ptr());
+        InvalidateRect(GetParent(s.add), ptr::null(), 1);
     });
     update_controls();
     Ok(())
@@ -520,9 +875,9 @@ unsafe fn update_controls() {
     STATE.with(|state| {
         let state = state.borrow();
         let Some(s) = state.as_ref() else { return };
-        let selected = SendMessageW(s.list, LB_GETCURSEL, 0, 0);
+        let selected = SendMessageW(s.picker, CB_GETCURSEL, 0, 0);
         EnableWindow(s.add, (!s.busy) as i32);
-        EnableWindow(s.list, (!s.busy && !s.devices.is_empty()) as i32);
+        EnableWindow(s.picker, (!s.busy && !s.devices.is_empty()) as i32);
         EnableWindow(
             s.remove,
             (!s.busy && selected >= 0 && (selected as usize) < s.devices.len()) as i32,
@@ -571,7 +926,11 @@ unsafe fn start_action(hwnd: HWND, id: u16) {
             Ok(Outcome::Discovered(
                 devices
                     .into_iter()
-                    .filter(|d| d.trust_state != TrustState::Trusted && d.id != local.id)
+                    .filter(|d| {
+                        d.trust_state != TrustState::Trusted
+                            && d.trust_state != TrustState::Blocked
+                            && d.id != local.id
+                    })
                     .collect(),
             ))
         });
@@ -580,7 +939,7 @@ unsafe fn start_action(hwnd: HWND, id: u16) {
         let device = STATE.with(|s| {
             let s = s.borrow();
             let s = s.as_ref().unwrap();
-            usize::try_from(SendMessageW(s.list, LB_GETCURSEL, 0, 0))
+            usize::try_from(SendMessageW(s.picker, CB_GETCURSEL, 0, 0))
                 .ok()
                 .and_then(|i| s.devices.get(i))
                 .cloned()
@@ -654,6 +1013,9 @@ unsafe fn poll_result(hwnd: HWND) {
                     crate::trust_store::TrustStore::load(crate::config::trust_store_path()?)?;
                 for id in &accepted {
                     store.trust_existing(id)?;
+                }
+                for id in &accepted {
+                    let _ = crate::notify_pairing_accept(id);
                 }
                 Ok(Outcome::Done(format!(
                     "已添加 {} 台可信设备。",

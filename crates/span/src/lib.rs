@@ -26,9 +26,12 @@ use crate::discovery::{
     DiscoveryMessage, broadcast_once, discover_once, listen_forever, respond_to_probe,
 };
 use crate::transport::{
-    TEXT_PORT, decrypt_text, encrypt_text, receive_text_forever, receive_text_once, send_text,
+    EncryptedPacketKind, TEXT_PORT, decrypt_text, encrypt_pairing_accept, encrypt_text,
+    receive_text_forever, receive_text_once, send_text,
 };
 use crate::trust_store::TrustStore;
+
+const PAIRING_ACCEPT_TEXT: &str = "\0SPAN_PAIR_ACCEPT_V1\0";
 
 pub fn run() -> io::Result<()> {
     let mut args = std::env::args().skip(1);
@@ -216,8 +219,14 @@ fn spawn_discovery_listener(
                         println!("discovered device: {} ({})", info.name, info.id);
                         notify_gui_pairing_request(&info);
                     }
+                    drop(store);
 
                     if trusted_before {
+                        // Repeat the encrypted pairing acknowledgement when a
+                        // trusted peer announces. This repairs one-sided trust
+                        // created by older Span versions after either app is
+                        // upgraded, without overriding an explicit revoke.
+                        let _ = send_pairing_accept_to(&local, &info);
                         let pending = latest_pending_text
                             .lock()
                             .ok()
@@ -303,18 +312,34 @@ fn spawn_receiver(local: LocalDevice, suppressed_text: Arc<Mutex<Option<String>>
         };
 
         if let Err(error) = receive_text_forever(|packet| {
-            let store = TrustStore::load(&trust_path)?;
-            let Some(trusted) = store.trusted_device(&packet.from) else {
-                eprintln!("rejected text from untrusted device: {}", packet.from);
+            let mut store = TrustStore::load(&trust_path)?;
+            let Some(sender) = store.device(&packet.from).cloned() else {
+                eprintln!("rejected packet from unknown device: {}", packet.from);
                 return Ok(());
             };
 
-            let Some(sender_key) = trusted.public_key.as_deref() else {
+            let Some(sender_key) = sender.public_key.as_deref() else {
                 eprintln!("rejected text from device without key: {}", packet.from);
                 return Ok(());
             };
 
             let text = decrypt_text(&packet, &local.private_key, sender_key)?;
+            if packet.kind == EncryptedPacketKind::PairingAccept && text == PAIRING_ACCEPT_TEXT {
+                if matches!(
+                    sender.trust_state,
+                    TrustState::Discovered | TrustState::Pending
+                ) {
+                    store.trust_existing(&packet.from)?;
+                    println!("pairing accepted by {}", sender.name);
+                }
+                return Ok(());
+            }
+
+            if packet.kind != EncryptedPacketKind::Text || sender.trust_state != TrustState::Trusted
+            {
+                eprintln!("rejected text from untrusted device: {}", packet.from);
+                return Ok(());
+            }
 
             let mut clipboard = system_clipboard();
             clipboard.write_text(&text)?;
@@ -327,6 +352,38 @@ fn spawn_receiver(local: LocalDevice, suppressed_text: Arc<Mutex<Option<String>>
             eprintln!("receiver stopped: {error}");
         }
     });
+}
+
+/// Confirm an explicit pairing choice to the peer. The proof is encrypted
+/// with the same device keys used for clipboard traffic, so the peer can make
+/// the trust relationship reciprocal without a second, confusing prompt.
+pub(crate) fn notify_pairing_accept(device_id: &DeviceId) -> io::Result<()> {
+    let local = load_or_create_local_device()?;
+    let store_path = trust_store_path()?;
+    refresh_trusted_endpoints(&store_path, &local, Duration::from_millis(500))?;
+    let store = TrustStore::load(&store_path)?;
+    let device = store
+        .trusted_device(device_id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "trusted device not found"))?;
+    send_pairing_accept_to(&local, device)
+}
+
+fn send_pairing_accept_to(local: &LocalDevice, device: &span_core::DeviceInfo) -> io::Result<()> {
+    let endpoint = device
+        .endpoint
+        .as_deref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "device is offline"))?;
+    let public_key = device
+        .public_key
+        .as_deref()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "device key is missing"))?;
+    let packet = encrypt_pairing_accept(
+        &local.id,
+        &local.private_key,
+        public_key,
+        PAIRING_ACCEPT_TEXT,
+    )?;
+    send_text((endpoint, TEXT_PORT), &packet)
 }
 
 fn should_suppress(suppressed_text: &Arc<Mutex<Option<String>>>, text: &str) -> bool {
@@ -733,6 +790,7 @@ fn accept_device(selection: Option<String>) -> io::Result<()> {
     if store.trust_existing(&device.id)? {
         println!("Accepted: {}", device.name);
         println!("Clipboard sync is now allowed for this device.");
+        let _ = notify_pairing_accept(&device.id);
     } else {
         println!("Device is no longer available. Run `span discover` and try again.");
     }
@@ -855,6 +913,10 @@ fn receive_once() -> io::Result<()> {
     println!("waiting for text on port {TEXT_PORT}...");
     match receive_text_once(Duration::from_secs(30))? {
         Some(packet) => {
+            if packet.kind != EncryptedPacketKind::Text {
+                println!("received a pairing packet; no clipboard text was changed");
+                return Ok(());
+            }
             let store = TrustStore::load(&trust_path)?;
             let Some(trusted) = store.trusted_device(&packet.from) else {
                 println!("untrusted sender: {}", packet.from);

@@ -12,11 +12,19 @@ use crate::crypto::{NONCE_BYTES, decode_hex, encode_hex, random_nonce, shared_ke
 
 pub const TEXT_PORT: u16 = 46793;
 const MAGIC: &str = "SPAN_TEXT_V3";
+const PAIRING_MAGIC: &str = "SPAN_PAIR_ACCEPT_V1";
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const KEY_INFO: &[u8] = b"span-text-v3";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EncryptedPacketKind {
+    Text,
+    PairingAccept,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EncryptedTextPacket {
+    pub kind: EncryptedPacketKind,
     pub from: DeviceId,
     pub nonce: [u8; NONCE_BYTES],
     pub ciphertext: Vec<u8>,
@@ -37,10 +45,22 @@ pub fn encrypt_text(
         .map_err(|_| io::Error::other("encrypt failed"))?;
 
     Ok(EncryptedTextPacket {
+        kind: EncryptedPacketKind::Text,
         from: from.clone(),
         nonce,
         ciphertext,
     })
+}
+
+pub fn encrypt_pairing_accept(
+    from: &DeviceId,
+    sender_private_key: &[u8; 32],
+    recipient_public_key: &str,
+    proof: &str,
+) -> io::Result<EncryptedTextPacket> {
+    let mut packet = encrypt_text(from, sender_private_key, recipient_public_key, proof)?;
+    packet.kind = EncryptedPacketKind::PairingAccept;
+    Ok(packet)
 }
 
 pub fn decrypt_text(
@@ -109,7 +129,10 @@ fn write_packet(mut writer: impl Write, packet: &EncryptedTextPacket) -> io::Res
     writeln!(
         writer,
         "{}\t{}\t{}\t{}",
-        MAGIC,
+        match packet.kind {
+            EncryptedPacketKind::Text => MAGIC,
+            EncryptedPacketKind::PairingAccept => PAIRING_MAGIC,
+        },
         packet.from,
         encode_hex(&packet.nonce),
         encode_hex(&packet.ciphertext)
@@ -123,9 +146,11 @@ fn read_packet(reader: impl Read) -> io::Result<EncryptedTextPacket> {
     reader.read_line(&mut header)?;
 
     let mut fields = header.trim_end().split('\t');
-    if fields.next() != Some(MAGIC) {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad magic"));
-    }
+    let kind = match fields.next() {
+        Some(MAGIC) => EncryptedPacketKind::Text,
+        Some(PAIRING_MAGIC) => EncryptedPacketKind::PairingAccept,
+        _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "bad magic")),
+    };
 
     let from = fields
         .next()
@@ -148,6 +173,7 @@ fn read_packet(reader: impl Read) -> io::Result<EncryptedTextPacket> {
     }
 
     Ok(EncryptedTextPacket {
+        kind,
         from,
         nonce,
         ciphertext,
@@ -175,6 +201,7 @@ mod tests {
     #[test]
     fn encrypted_packet_round_trip_preserves_header() {
         let packet = EncryptedTextPacket {
+            kind: EncryptedPacketKind::Text,
             from: DeviceId::new("macbook").unwrap(),
             nonce: [7_u8; NONCE_BYTES],
             ciphertext: b"hello".to_vec(),
@@ -208,5 +235,26 @@ mod tests {
         .unwrap();
 
         assert_eq!(decrypted, "hello from span");
+    }
+
+    #[test]
+    fn pairing_packet_has_a_distinct_wire_type() {
+        let (sender_private, _) = generate_keypair();
+        let (_, receiver_public) = generate_keypair();
+        let packet = encrypt_pairing_accept(
+            &DeviceId::new("sender").unwrap(),
+            &sender_private,
+            &crate::crypto::encode_hex(&receiver_public),
+            "pairing proof",
+        )
+        .unwrap();
+        let mut bytes = Vec::new();
+        write_packet(&mut bytes, &packet).unwrap();
+
+        assert!(bytes.starts_with(PAIRING_MAGIC.as_bytes()));
+        assert_eq!(
+            read_packet(Cursor::new(bytes)).unwrap().kind,
+            EncryptedPacketKind::PairingAccept
+        );
     }
 }

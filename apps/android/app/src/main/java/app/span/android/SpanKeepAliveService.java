@@ -5,12 +5,21 @@ import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.AccessibilityServiceInfo;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.PixelFormat;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Gravity;
+import android.view.View;
+import android.view.WindowManager;
 import android.view.accessibility.AccessibilityEvent;
-import java.lang.ref.WeakReference;
 import android.view.accessibility.AccessibilityManager;
+import android.widget.FrameLayout;
+import android.widget.Toast;
+import java.lang.ref.WeakReference;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Optional system-bound watchdog for vendors that kill normal foreground services.
@@ -23,16 +32,28 @@ import java.util.List;
 public final class SpanKeepAliveService extends AccessibilityService {
     private static final long HEARTBEAT_MILLIS = 60_000;
     private static final long EVENT_RETRY_DEBOUNCE_MILLIS = 500;
+    private static final long CLIPBOARD_FOCUS_TIMEOUT_MILLIS = 1_200;
     private static WeakReference<SpanKeepAliveService> activeService = new WeakReference<>(null);
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final ExecutorService clipboardWorker = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean clipboardSendPending = new AtomicBoolean();
+    private final AtomicBoolean clipboardReadStarted = new AtomicBoolean();
     private long lastEventRetryMillis;
     private AccessibilityButtonController accessibilityButtonController;
+    private WindowManager windowManager;
+    private View clipboardFocusWindow;
     private final AccessibilityButtonController.AccessibilityButtonCallback accessibilityButtonCallback =
             new AccessibilityButtonController.AccessibilityButtonCallback() {
                 @Override public void onClicked(AccessibilityButtonController controller) {
-                    launchClipboardSend();
+                    sendClipboardWithoutActivity();
                 }
             };
+    private final Runnable clipboardFocusTimeout = () -> {
+        if (!clipboardSendPending.get() || clipboardReadStarted.get()) return;
+        removeClipboardFocusWindow();
+        clipboardSendPending.set(false);
+        launchClipboardSendActivity();
+    };
     private final Runnable heartbeat = new Runnable() {
         @Override public void run() {
             ensureReceiver();
@@ -48,6 +69,7 @@ public final class SpanKeepAliveService extends AccessibilityService {
                 accessibilityButtonCallback, handler);
         handler.removeCallbacks(heartbeat);
         ensureReceiver();
+        if (SpanReceiveService.isRunning()) SpanReceiveService.start(this);
         handler.postDelayed(heartbeat, HEARTBEAT_MILLIS);
     }
 
@@ -71,6 +93,10 @@ public final class SpanKeepAliveService extends AccessibilityService {
 
     @Override public void onDestroy() {
         handler.removeCallbacks(heartbeat);
+        handler.removeCallbacks(clipboardFocusTimeout);
+        removeClipboardFocusWindow();
+        clipboardWorker.shutdownNow();
+        clipboardSendPending.set(false);
         if (accessibilityButtonController != null) {
             accessibilityButtonController.unregisterAccessibilityButtonCallback(
                     accessibilityButtonCallback);
@@ -78,10 +104,108 @@ public final class SpanKeepAliveService extends AccessibilityService {
         }
         SpanKeepAliveService current = activeService.get();
         if (current == this) activeService = new WeakReference<>(null);
+        if (SpanReceiveService.isRunning()) SpanReceiveService.start(this);
         super.onDestroy();
     }
 
-    private void launchClipboardSend() {
+    /**
+     * Runs a user-requested clipboard send without bringing Span's Activity to
+     * the foreground. Android 10+ only exposes clipboard contents to the UID
+     * owning the focused window, so the accessibility service briefly owns a
+     * transparent 1x1 accessibility overlay while it reads the clipboard.
+     */
+    private void sendClipboardWithoutActivity() {
+        if (!clipboardSendPending.compareAndSet(false, true)) return;
+        clipboardReadStarted.set(false);
+        ensureReceiver();
+
+        windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
+        if (windowManager == null) {
+            clipboardSendPending.set(false);
+            launchClipboardSendActivity();
+            return;
+        }
+
+        FrameLayout focusWindow = new FrameLayout(this) {
+            @Override public void onWindowFocusChanged(boolean hasFocus) {
+                super.onWindowFocusChanged(hasFocus);
+                if (hasFocus) beginFocusedClipboardRead();
+            }
+        };
+        focusWindow.setFocusable(true);
+        focusWindow.setFocusableInTouchMode(true);
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                1,
+                1,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+                PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.alpha = 0.01f;
+        params.setTitle("Span clipboard send");
+
+        try {
+            clipboardFocusWindow = focusWindow;
+            windowManager.addView(focusWindow, params);
+            focusWindow.requestFocus();
+            handler.postDelayed(clipboardFocusTimeout, CLIPBOARD_FOCUS_TIMEOUT_MILLIS);
+        } catch (RuntimeException error) {
+            removeClipboardFocusWindow();
+            clipboardSendPending.set(false);
+            launchClipboardSendActivity();
+        }
+    }
+
+    private void beginFocusedClipboardRead() {
+        if (!clipboardSendPending.get() || !clipboardReadStarted.compareAndSet(false, true)) return;
+        handler.removeCallbacks(clipboardFocusTimeout);
+        String text;
+        try {
+            // Capture while this UID owns window focus, then immediately return
+            // focus to the previous app before doing any network I/O.
+            text = SpanClipboardSync.captureCurrentClipboard(this);
+        } catch (SecurityException error) {
+            removeClipboardFocusWindow();
+            clipboardSendPending.set(false);
+            launchClipboardSendActivity();
+            return;
+        }
+        removeClipboardFocusWindow();
+        clipboardWorker.execute(() -> {
+            try {
+                int sent = SpanClipboardSync.sendCapturedClipboard(this, text);
+                finishClipboardSend(sent == 0
+                        ? "没有可信设备或剪贴板为空"
+                        : "已发送到 " + sent + " 台设备");
+            } catch (Exception error) {
+                finishClipboardSend("发送失败，请检查设备是否在线");
+            }
+        });
+    }
+
+    private void finishClipboardSend(String message) {
+        handler.post(() -> {
+            removeClipboardFocusWindow();
+            clipboardSendPending.set(false);
+            Toast.makeText(this, message, Toast.LENGTH_SHORT).show();
+        });
+    }
+
+    private void removeClipboardFocusWindow() {
+        handler.removeCallbacks(clipboardFocusTimeout);
+        View window = clipboardFocusWindow;
+        clipboardFocusWindow = null;
+        if (window == null || windowManager == null) return;
+        try {
+            windowManager.removeViewImmediate(window);
+        } catch (RuntimeException ignored) {
+            // The system may already have detached the accessibility window.
+        }
+    }
+
+    private void launchClipboardSendActivity() {
         Intent intent = new Intent(this, SendClipboardActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
                 | Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -102,6 +226,17 @@ public final class SpanKeepAliveService extends AccessibilityService {
         if (service == null) return false;
         service.handler.post(service::ensureReceiver);
         return true;
+    }
+
+    static boolean requestClipboardSend() {
+        SpanKeepAliveService service = activeService.get();
+        if (service == null) return false;
+        service.handler.post(service::sendClipboardWithoutActivity);
+        return true;
+    }
+
+    static boolean isConnected() {
+        return activeService.get() != null;
     }
 
     static boolean isEnabled(Context context) {

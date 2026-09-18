@@ -7,7 +7,7 @@ Android 端第一版只做**纯文本双向流转**，目标是用最小的系�
 - Android 10+（`minSdk 29`）
 - 当前剪贴板一键发送
 - 系统分享菜单发送选中的文本 / URL
-- Quick Settings Tile 一键发送当前剪贴板
+- Quick Settings Tile 一键发送当前剪贴板；启用可靠后台后无需打开 Span 界面
 - PC → Android：前台接收服务监听 TCP 46793，Span 界面不在前台时也会解密并写入系统剪贴板
 - 可选“可靠后台”系统托管服务：用于被厂商系统清理后恢复接收器，并在切换到目标 App 时重试待写入的剪贴板；不读取界面、不模拟点击
 - 开机、快速开机及 APK 覆盖升级后恢复接收服务（用户关闭接收后不会恢复）
@@ -22,13 +22,26 @@ Android 端第一版只做**纯文本双向流转**，目标是用最小的系�
 - Android 端现在支持双向文本链路：Android → PC 主动发送，PC → Android 由接收服务写入剪贴板。
 - Android 10 以后系统限制后台读取剪贴板。Span 不做绕过系统限制的常驻读取：
   - 打开 Span 后可读取当前剪贴板；
-  - Quick Settings Tile 会短暂拉起 Span，再读取并发送；
+  - 启用可靠后台后，无障碍快捷按钮、Quick Settings Tile 和常驻通知的发送按钮会在用户点击时通过透明的系统托管窗口读取一次并发送，不打开 Span 界面；
+  - 未启用可靠后台，或厂商系统不支持透明系统托管窗口时，快捷入口会短暂拉起 Span 再读取并发送；
   - 系统分享菜单是最可靠的选中文本入口。
 - PC → Android 接收是独立的前台服务，只接收已信任设备的加密 TCP 文本，不读取手机当前剪贴板。首次设置完成后，不需要先进入 Span；可直接打开微信、浏览器等目标 App 粘贴。若厂商系统拒绝普通后台服务写剪贴板，Span 会立即转交给已启用的系统托管服务重试。
-- 华为、小米、三星等厂商可能清理普通前台服务。首次配对后点击 **Enable reliable background**：
+- 华为、小米、三星等厂商可能清理普通前台服务。首次配对后点击 **开启可靠后台**：
   1. 在系统“无障碍”设置中启用 **Span reliable background receiver**；
   2. 返回 Span，再允许忽略电池优化。
   该系统托管服务只订阅前台窗口切换事件，不能读取窗口内容、不会执行手势；用途是保证局域网接收器存活，并在厂商系统延迟剪贴板写入时重试。授权会在重启后保留。华为还建议在“应用启动管理”中允许 Span 自启动和后台活动。
+
+### 各厂商后台设置
+
+不同系统的菜单名称和后台策略差异较大，请按手机品牌查看独立说明：
+
+- [设置总览与验证方法](docs/background-setup/README.md)
+- [小米 / Redmi（HyperOS、MIUI）](docs/background-setup/xiaomi-redmi.md)
+- [OPPO / 一加 / realme（ColorOS 系）](docs/background-setup/oppo-oneplus-realme.md)
+- [华为（HarmonyOS、EMUI）](docs/background-setup/huawei.md)
+- [荣耀（MagicOS）](docs/background-setup/honor.md)
+- [vivo / iQOO（OriginOS、Funtouch OS）](docs/background-setup/vivo-iqoo.md)
+- [三星（One UI）](docs/background-setup/samsung.md)
 
 ## 本机编译
 

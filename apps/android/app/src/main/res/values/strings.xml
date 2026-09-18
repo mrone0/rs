@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="span_keep_alive_label">Span 后台同步与快捷发送</string>
-    <string name="span_keep_alive_description">保持局域网接收服务运行，并通过系统无障碍按钮快捷发送剪贴板。Span 不读取屏幕内容、不检查控件，也不会模拟点击。</string>
+    <string name="span_keep_alive_description">保持局域网接收服务运行，并通过系统无障碍按钮快捷发送剪贴板。仅在你点击快捷按钮时读取一次剪贴板；Span 不读取屏幕内容、不检查控件，也不会模拟点击。</string>
 </resources>

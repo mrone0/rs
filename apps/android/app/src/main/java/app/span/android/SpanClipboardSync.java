@@ -25,7 +25,15 @@ final class SpanClipboardSync {
     private SpanClipboardSync() {}
 
     static int sendCurrentClipboard(Context context) throws Exception {
-        return sendText(context, readClipboardText(context), false);
+        return sendCapturedClipboard(context, captureCurrentClipboard(context));
+    }
+
+    static String captureCurrentClipboard(Context context) {
+        return readClipboardText(context);
+    }
+
+    static int sendCapturedClipboard(Context context, String text) throws Exception {
+        return sendText(context, text, false);
     }
 
     static int sendSharedText(Context context, String text) throws Exception {

@@ -25,6 +25,7 @@ public final class SpanReceiveService extends Service {
     private static final String TAG = "SpanReceiveService";
     static final String ACTION_START = "app.span.android.action.START_RECEIVER";
     static final String ACTION_STOP = "app.span.android.action.STOP_RECEIVER";
+    static final String ACTION_SEND_CLIPBOARD = "app.span.android.action.SEND_CLIPBOARD";
     private static final String CHANNEL_ID = "span-transfer";
     private static final int NOTIFICATION_ID = 46793;
     private static final int RECEIVED_NOTIFICATION_ID = 46794;
@@ -75,6 +76,12 @@ public final class SpanReceiveService extends Service {
             return START_NOT_STICKY;
         }
         startForegroundCompat(buildListeningNotification());
+        if (intent != null && ACTION_SEND_CLIPBOARD.equals(intent.getAction())) {
+            if (!SpanKeepAliveService.requestClipboardSend()) {
+                Log.w(TAG, "Clipboard send requested without a connected accessibility service");
+            }
+            return START_STICKY;
+        }
         startDiscovery();
         if (!running && identity != null) {
             running = true;
@@ -220,11 +227,20 @@ public final class SpanReceiveService extends Service {
         PendingIntent pending = PendingIntent.getActivity(
                 this, 0, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
-        Intent send = new Intent(this, SendClipboardActivity.class);
-        send.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-        PendingIntent sendPending = PendingIntent.getActivity(
-                this, 1, send,
-                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        PendingIntent sendPending;
+        if (SpanKeepAliveService.isConnected()) {
+            Intent send = new Intent(this, SpanReceiveService.class)
+                    .setAction(ACTION_SEND_CLIPBOARD);
+            sendPending = PendingIntent.getService(
+                    this, 1, send,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        } else {
+            Intent send = new Intent(this, SendClipboardActivity.class);
+            send.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            sendPending = PendingIntent.getActivity(
+                    this, 1, send,
+                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        }
         return new Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_span)
                 .setContentTitle("Span 后台同步")
